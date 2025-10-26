@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 const DEFAULT_GATEWAYS = [
   process.env.PINATA_PUBLIC_GATEWAY?.replace(/\/$/, "") || "https://gateway.pinata.cloud/ipfs",
   "https://ipfs.io/ipfs",
-  "https://cloudflare-ipfs.com/ipfs"
+  "https://dweb.link/ipfs"
 ];
 
 const isValidCid = (hash: string) => /^[A-Za-z0-9]+$/.test(hash);

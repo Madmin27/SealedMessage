@@ -29,9 +29,9 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
     setMounted(true);
   }, []);
 
-  // Get Zama contract address from supportedChains config
+  // Get Sealed contract address from supportedChains config
   const chainConfig = chain?.id ? Object.values(supportedChains).find(c => c.id === chain.id) : undefined;
-  const zamaContractAddress = chainConfig?.zamaContractAddress;
+  const contractAddress = chainConfig?.contractAddress;
 
   // Debug log
   if (chain) {
@@ -39,12 +39,12 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
       chainId: chain.id,
       chainName: chain.name,
       chainConfig: chainConfig,
-      zamaContractAddress: zamaContractAddress
+      contractAddress
     });
   }
 
   const { data, write } = useContractWrite({
-    address: zamaContractAddress as `0x${string}`,
+    address: contractAddress as `0x${string}`,
     abi: factoryAbi,
     functionName: "deployChronoMessage"
   });
@@ -92,7 +92,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
       return;
     }
 
-    if (!zamaContractAddress || zamaContractAddress === "0x0000000000000000000000000000000000000000") {
+    if (!contractAddress || contractAddress === "0x0000000000000000000000000000000000000000") {
       setError(`Bu ağda (${chain?.name}) factory henüz deploy edilmemiş`);
       return;
     }
@@ -129,7 +129,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
     );
   }
 
-  if (!zamaContractAddress || zamaContractAddress === "0x0000000000000000000000000000000000000000") {
+  if (!contractAddress || contractAddress === "0x0000000000000000000000000000000000000000") {
     return (
       <div className="rounded-lg border border-orange-600 bg-orange-900/20 p-4">
         <p className="text-sm text-orange-200">
@@ -147,10 +147,10 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-aurora">
-            Kendi Contract'ınızı Deploy Edin
+            Kendi Contract&apos;ınızı Deploy Edin
           </h3>
           <p className="mt-1 text-sm text-slate-400">
-            Bu ağda ({chain?.name}) kendi ChronoMessage contract'ınızı oluşturun
+            Bu ağda ({chain?.name}) kendi ChronoMessage contract&apos;ınızı oluşturun
           </p>
         </div>
         
@@ -227,7 +227,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-xs text-green-300 hover:text-green-200"
             >
-              Explorer'da Görüntüle →
+              Explorer&apos;da Görüntüle →
             </a>
           </div>
         </div>
@@ -237,8 +237,8 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
         <h4 className="text-sm font-semibold text-slate-200">💡 Nasıl Çalışır?</h4>
         <ul className="mt-2 space-y-1 text-xs text-slate-400">
           <li>• Factory contract üzerinden yeni bir ChronoMessage instance oluşturulur</li>
-          <li>• Contract'ın sahibi sizsiniz (deployer)</li>
-          <li>• Sadece sizin mesajlarınız bu contract'ta saklanır</li>
+          <li>• Contract&apos;ın sahibi sizsiniz (deployer)</li>
+          <li>• Sadece sizin mesajlarınız bu contract&apos;ta saklanır</li>
           <li>• Her ağda farklı contract deploy edebilirsiniz</li>
           <li>• Deploy maliyeti: ~0.001-0.01 ETH (ağa göre değişir)</li>
         </ul>

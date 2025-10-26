@@ -1,16 +1,8 @@
 {
-  "address": "0x13ada5177F408263eb721259fcc976d3feC8d2c4",
+  "address": "0x06423fb79B6621266bE7C7e899A8F194bC75D72B",
   "network": "sepolia",
   "chainId": 11155111,
   "deployer": "0xF6D39Dda8997407110264acEc6a24345834cB639",
-  "deployedAt": "2025-10-16T16:35:01.354Z",
-  "blockNumber": 9425265,
-  "contractType": "ChronoMessageZama",
-  "fheEnabled": true,
-  "features": [
-    "Zama FHE encryption (euint256)",
-    "Time-locked messaging",
-    "Access control (only sender can read)",
-    "Sepolia testnet compatible"
-  ]
+  "deployedAt": "2025-10-25T13:38:00Z",
+  "blockNumber": 9487482
 }

@@ -1,8 +1,8 @@
 {
   "name": "SealedMessage",
   "description": "Time-locked encrypted messages on Base. Send messages that can only be read after a specific time.",
-  "icon": "https://zama.minen.com.tr/icon.png",
-  "url": "https://zama.minen.com.tr",
+  "icon": "https://sealedmessage.app/icon.png",
+  "url": "https://sealedmessage.app",
   "networks": [
     {
       "chainId": "eip155:84532",
@@ -16,13 +16,13 @@
   "version": "1.0.0",
   "author": {
     "name": "SealedMessage Team",
-    "url": "https://zama.minen.com.tr"
+    "url": "https://sealedmessage.app"
   },
   "social": {
     "github": "https://github.com/Madmin27/zamamessage"
   },
   "categories": ["social", "messaging", "privacy"],
   "screenshots": [
-    "https://zama.minen.com.tr/screenshot.png"
+    "https://sealedmessage.app/screenshot.png"
   ]
 }

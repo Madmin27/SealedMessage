@@ -4,12 +4,15 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useContractWrite, useWaitForTransaction, usePublicClient, useAccount, usePrepareContractWrite, useWalletClient } from "wagmi";
 import dayjs from "dayjs";
 import duration from "dayjs/plugin/duration";
-import { chronoMessageZamaAbi } from "../lib/abi-zama";
+import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { appConfig } from "../lib/env";
 import { useContractAddress } from "../lib/useContractAddress";
+import { generateFallbackKeyPair } from "../lib/keyAgreement";
+import type { DecryptOptions } from "../lib/decryption";
 import { useNetwork } from "wagmi";
 import { IPFSFileDisplay } from "./IPFSFileDisplay";
-import { useFhe, useFheStatus } from "./FheProvider";
+import { MessagePreview, AttachmentBadge } from "./MessagePreview";
+import { MessagePreviewData } from "@/types/message";
 import { formatUnits } from "viem";
 
 dayjs.extend(duration);
@@ -41,6 +44,8 @@ interface MessageCardProps {
     size: number;
     type: string;
   };
+  chainId?: number;
+  chainKey?: string;
 }
 
 interface SentPreviewCache {
@@ -51,6 +56,8 @@ interface SentPreviewCache {
     fileName?: string | null;
     fileSize?: number | null;
     mimeType?: string | null;
+  thumbnail?: string | null; // 25×25 thumbnail (base64)
+    dimensions?: { width: number; height: number } | null;
   } | null;
 }
 
@@ -91,6 +98,22 @@ const decodeAscii = (bytes: Uint8Array): string => {
   }
 };
 
+const sanitizeIpfsValue = (value: unknown): string | undefined => {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  let sanitized = value.trim();
+  if (!sanitized) {
+    return undefined;
+  }
+  sanitized = sanitized.replace(/^ipfs:\/\//i, "");
+  sanitized = sanitized.replace(/^https?:\/\/[^/]+\/ipfs\//i, "");
+  sanitized = sanitized.replace(/^\/+/, "");
+  const [cidPart] = sanitized.split(/[?#]/u);
+  const cidOnly = cidPart.includes("/") ? cidPart.split("/")[0] : cidPart;
+  return cidOnly || undefined;
+};
+
 interface NormalizedMetadata {
   type: string;
   shortHash?: string;
@@ -100,7 +123,10 @@ interface NormalizedMetadata {
   name?: string;
   size?: number;
   mimeType?: string;
-  preview?: string;
+  previewText?: string;
+  thumbnail?: string;
+  dimensions?: { width: number; height: number };
+  hasAttachment?: boolean;
   createdAt?: string;
 }
 
@@ -129,31 +155,58 @@ const normaliseMetadataPayload = (
       typeof raw.shortHash === "string"
         ? raw.shortHash
         : context.shortHash,
-    fullHash: context.fullHash,
+    fullHash: sanitizeIpfsValue(context.fullHash) ?? context.fullHash,
     message:
       typeof raw.message === "string"
         ? raw.message
         : typeof raw.content === "string"
         ? raw.content
+        : typeof raw.preview?.text === "string"
+        ? raw.preview.text
         : undefined,
-    preview: typeof raw.preview === "string" ? raw.preview : undefined,
+    previewText:
+      typeof raw.preview === "string"
+        ? raw.preview
+        : typeof raw.preview?.text === "string"
+        ? raw.preview.text
+        : undefined,
     createdAt: typeof raw.createdAt === "string" ? raw.createdAt : undefined
   };
 
   if (normalized.type === "file") {
+    // Check for attachment nested object first (new format)
+    const attachmentObj = raw.attachment || raw.fileMetadata;
+    const previewObj = typeof raw.preview === "object" && raw.preview ? raw.preview : undefined;
+    
     const ipfsHash =
       typeof raw.ipfs === "string"
         ? raw.ipfs
         : typeof raw.ipfsHash === "string"
         ? raw.ipfsHash
-        : undefined;
-    normalized.ipfs = ipfsHash;
-
+        : attachmentObj?.ipfsHash;
+    normalized.ipfs = sanitizeIpfsValue(ipfsHash);
+    normalized.hasAttachment = true;
+    
+    if (!normalized.previewText && typeof previewObj?.text === "string") {
+      normalized.previewText = previewObj.text;
+    }
+    if (!normalized.thumbnail && typeof previewObj?.thumbnail === "string") {
+      normalized.thumbnail = previewObj.thumbnail;
+    }
+    if (!normalized.dimensions) {
+      const dims = previewObj?.dimensions ?? attachmentObj?.dimensions;
+      if (dims && typeof dims.width === "number" && typeof dims.height === "number") {
+        normalized.dimensions = { width: dims.width, height: dims.height };
+      }
+    }
+    
     const fileName =
       typeof raw.name === "string"
         ? raw.name
         : typeof raw.fileName === "string"
         ? raw.fileName
+        : attachmentObj?.fileName
+        ? attachmentObj.fileName
         : undefined;
     normalized.name = fileName;
 
@@ -162,6 +215,8 @@ const normaliseMetadataPayload = (
         ? raw.size
         : typeof raw.fileSize === "number"
         ? raw.fileSize
+        : attachmentObj?.fileSize
+        ? attachmentObj.fileSize
         : undefined;
     normalized.size =
       typeof sizeValue === "number" && Number.isFinite(sizeValue)
@@ -173,6 +228,8 @@ const normaliseMetadataPayload = (
         ? raw.mimeType
         : typeof raw.fileType === "string"
         ? raw.fileType
+        : attachmentObj?.mimeType
+        ? attachmentObj.mimeType
         : undefined;
     normalized.mimeType = mimeType ?? "application/octet-stream";
   } else {
@@ -294,6 +351,29 @@ const formatPaymentAmount = (
   }
 };
 
+const toBigIntSafe = (value: unknown): bigint => {
+  if (typeof value === "bigint") {
+    return value;
+  }
+  if (typeof value === "number") {
+    return BigInt(value);
+  }
+  if (typeof value === "string" && value.trim().length > 0) {
+    return BigInt(value);
+  }
+  if (value && typeof (value as { toString: () => string }).toString === "function") {
+    const asString = (value as { toString: () => string }).toString();
+    if (asString && asString.trim().length > 0 && asString !== "[object Object]") {
+      try {
+        return BigInt(asString);
+      } catch {
+        return 0n;
+      }
+    }
+  }
+  return 0n;
+};
+
 const toReadableError = (error: unknown): string => {
   if (error instanceof Error) {
     return error.message;
@@ -327,15 +407,35 @@ export function MessageCard({
   transactionHash,
   paymentTxHash,
   contentType,
-  fileMetadata
+  fileMetadata,
+  chainId: propsChainId,
+  chainKey: propsChainKey
 }: MessageCardProps) {
   const client = usePublicClient();
   const { address: userAddress } = useAccount();
   const { data: walletClient } = useWalletClient();
   const hookContractAddress = useContractAddress(); // Hook'tan gelen (current)
   const { chain } = useNetwork();
-  const fhe = useFhe();
-  const { isLoading: isFheLoading, isReady: isFheReady } = useFheStatus();
+  const activeChainId = chain?.id;
+  const messageChainId = propsChainId ?? activeChainId;
+  const messageChainKey = propsChainKey;
+  const explorerBaseUrl = useMemo(() => {
+    const explorerUrl = chain?.blockExplorers?.default?.url;
+    return explorerUrl ?? appConfig.chain.explorerUrl ?? "";
+  }, [chain]);
+  const encryptionReady = true;
+  const encryptionLoading = false;
+  const buildChainQuery = useCallback(() => {
+    const params = new URLSearchParams();
+    if (messageChainKey) {
+      params.set("chainKey", messageChainKey);
+    }
+    if (typeof messageChainId === "number" && Number.isFinite(messageChainId)) {
+      params.set("chainId", messageChainId.toString());
+    }
+    const query = params.toString();
+    return query ? `?${query}` : "";
+  }, [messageChainKey, messageChainId]);
   const [prefetchedHandle, setPrefetchedHandle] = useState<unknown | null>(null);
   
   // ✅ Props'tan gelen varsa onu kullan, yoksa hook'tan gelenı kullan
@@ -350,12 +450,69 @@ export function MessageCard({
   // localStorage'dan initial state yükle (basit key, sonra cacheKey ile güncellenecek)
   const [messageContent, setMessageContent] = useState<string | null>(null);
   const [fileMetadataState, setFileMetadataState] = useState<any>(null);
+  const [useThumbnailFallback, setUseThumbnailFallback] = useState(false);
+  const [useGatewayFallback, setUseGatewayFallback] = useState(false);
   const [isLoadingFileMetadata, setIsLoadingFileMetadata] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [isLoadingContent, setIsLoadingContent] = useState(false);
   const [localUnlocked, setLocalUnlocked] = useState(unlocked);
   const [localIsRead, setLocalIsRead] = useState(isRead);
   const [decryptError, setDecryptError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setUseThumbnailFallback(false);
+    setUseGatewayFallback(false);
+  }, [fileMetadataState, localUnlocked]);
+
+  const normalizedPreviewImageHash = useMemo(() => {
+    if (!fileMetadataState) return null;
+    const candidate = (
+      fileMetadataState.ipfs ||
+      fileMetadataState.previewImageHash ||
+      fileMetadataState.fullHash ||
+      null
+    );
+    if (!candidate) return null;
+    return typeof candidate === 'string' ? candidate : String(candidate);
+  }, [fileMetadataState]);
+
+  const resolvedPrimaryImageSrc = normalizedPreviewImageHash
+    ? normalizedPreviewImageHash.startsWith('data:')
+      ? normalizedPreviewImageHash
+      : useGatewayFallback
+        ? `https://ipfs.io/ipfs/${normalizedPreviewImageHash}`
+        : `/api/ipfs/${normalizedPreviewImageHash}`
+    : null;
+  const resolvedThumbnailSrc = fileMetadataState?.thumbnail
+    ? typeof fileMetadataState.thumbnail === 'string'
+      ? fileMetadataState.thumbnail
+      : String(fileMetadataState.thumbnail)
+    : null;
+  const resolvedImageSrc =
+    useThumbnailFallback && resolvedThumbnailSrc
+      ? resolvedThumbnailSrc
+      : resolvedPrimaryImageSrc ?? resolvedThumbnailSrc;
+  const isImageAttachment = typeof fileMetadataState?.mimeType === 'string'
+    ? fileMetadataState.mimeType.toLowerCase().startsWith('image/')
+    : false;
+  const downloadSourceHash = fileMetadataState?.ipfs
+    ? (() => {
+        const candidate = String(fileMetadataState.ipfs);
+        return candidate.startsWith('data:') ? null : candidate;
+      })()
+    : normalizedPreviewImageHash && !normalizedPreviewImageHash.startsWith('data:')
+      ? normalizedPreviewImageHash
+      : null;
+  const resolvedDownloadUrl = downloadSourceHash
+    ? useGatewayFallback
+      ? `https://ipfs.io/ipfs/${downloadSourceHash}`
+      : `/api/ipfs/${downloadSourceHash}`
+    : null;
+  const trimmedMessageContent = useMemo(
+    () => (typeof messageContent === 'string' ? messageContent.trim() : ''),
+    [messageContent]
+  );
+  const canShowUnlockedPreview = Boolean(trimmedMessageContent) && !decryptError;
   
   // 📋 PREVIEW METADATA: Locked mesaj bilgileri
   const [previewMetadata, setPreviewMetadata] = useState<{
@@ -363,6 +520,10 @@ export function MessageCard({
     fileSize: bigint;
     contentType: string;
     previewImageHash: string;
+  thumbnail?: string; // 25×25 thumbnail (base64)
+    dimensions?: { width: number; height: number }; // Original image dimensions
+    hasAttachment?: boolean;
+    previewText?: string;
   } | null>(null);
   const [isLoadingPreviewMeta, setIsLoadingPreviewMeta] = useState(false);
   
@@ -375,9 +536,17 @@ export function MessageCard({
   
   // ✅ YENİ: Payment bilgisi state
   const [requiredPaymentAmount, setRequiredPaymentAmount] = useState<bigint | null>(null);
+  const [paidAmountOnchain, setPaidAmountOnchain] = useState<bigint | null>(null);
+
+  // Keep track of metadata hashes we already tried to resolve to avoid repeated 404 spam
+  const attemptedMetadataHashesRef = useRef<Set<string>>(new Set());
+  const missingMetadataHashCacheKeyPrefix = 'metadata-hash-missing-';
+  const missingMetadataHashRecheckMs = 6 * 60 * 60 * 1000; // 6 saat sonra tekrar dene
   const [conditionMask, setConditionMask] = useState<number>(0);
   const [metadataLoaded, setMetadataLoaded] = useState(false);
   const [isLoadingPaymentInfo, setIsLoadingPaymentInfo] = useState(false);
+  const [manualPaymentHash, setManualPaymentHash] = useState<`0x${string}` | null>(null);
+  const [isManualPaymentPending, setIsManualPaymentPending] = useState(false);
   const [onchainUnlocked, setOnchainUnlocked] = useState<boolean | null>(null);
   const metadataReadyRef = useRef(false);
 
@@ -393,7 +562,8 @@ export function MessageCard({
   useEffect(() => {
     if (typeof window === 'undefined' || !cacheKey) return;
     
-    const sentPreview = localStorage.getItem(`${cacheKey}-sent-preview-${id}`);
+  const legacyKey = `${cacheKey}-sent-preview-${id}`;
+  const sentPreview = localStorage.getItem(legacyKey) ?? localStorage.getItem(`sent-preview-${id}`);
     if (sentPreview) {
       try {
         const parsed = JSON.parse(sentPreview) as SentPreviewCache;
@@ -466,38 +636,29 @@ export function MessageCard({
       : false;
 
     try {
-      const metadata = await client.readContract({
+      const result = await client.readContract({
         address: contractAddress,
-        abi: chronoMessageZamaAbi as any,
-        functionName: "getMessageMetadata",
+        abi: sealedMessageAbi as any,
+        functionName: "getMessageFinancialView",
         args: [id]
-      }) as [string, string, bigint, boolean, number, bigint];
+      }) as any;
 
-      const metadataUnlockedRaw = Boolean(metadata[3]);
-      const fetchedConditionMask = Number(metadata[4]);
-      const paymentAmount = metadata[5];
+      // getMessageFinancialView returns a struct: { unlockTime, requiredPayment, paidAmount, conditionMask, isUnlocked }
+      const metadata = result.viewData || result; // Handle both wrapped and unwrapped responses
+      
+      const metadataUnlockedRaw = Boolean(metadata.isUnlocked);
+      const fetchedConditionMask = Number(metadata.conditionMask);
+      const paymentAmount = toBigIntSafe(metadata.requiredPayment);
+      const paidAmount = toBigIntSafe(metadata.paidAmount);
 
       const effectiveUnlocked = metadataUnlockedRaw || cachedUnlocked;
 
       setConditionMask(fetchedConditionMask);
       setRequiredPaymentAmount(paymentAmount);
+      setPaidAmountOnchain(paidAmount);
       setMetadataLoaded(true);
       metadataReadyRef.current = true;
       setOnchainUnlocked(metadataUnlockedRaw);
-
-      console.log("📋 Message metadata:", {
-        sender: metadata[0],
-        receiver: metadata[1],
-        unlockTime: metadata[2].toString(),
-        isUnlocked: metadataUnlockedRaw,
-        cachedUnlocked,
-        effectiveUnlocked,
-        conditionMask: fetchedConditionMask,
-        hasTimeCondition: (fetchedConditionMask & 0x01) !== 0,
-  paymentFlag: (fetchedConditionMask & 0x02) !== 0,
-  paymentInWei: paymentAmount.toString(),
-        paymentEnforced: (fetchedConditionMask & 0x02) !== 0 && paymentAmount > 0n
-      });
 
       setLocalUnlocked((prev) => {
         const next = effectiveUnlocked || prev;
@@ -552,7 +713,7 @@ export function MessageCard({
     };
   }, [unlockTime, ensureOnchainUnlocked, isSent]);
 
-  // ✅ Ödeme bilgisi artık getMessageMetadata üzerinden geliyor; ayrı bir fetch yok
+  // ✅ Ödeme bilgisi artık getMessageFinancialView üzerinden geliyor; ayrı bir fetch yok
   useEffect(() => {
     if (!metadataLoaded) {
       setIsLoadingPaymentInfo(true);
@@ -562,25 +723,289 @@ export function MessageCard({
       setIsLoadingPaymentInfo(false);
       return;
     }
-    setIsLoadingPaymentInfo(requiredPaymentAmount == null);
-  }, [metadataLoaded, conditionMask, requiredPaymentAmount]);
+    setIsLoadingPaymentInfo(requiredPaymentAmount == null || paidAmountOnchain == null);
+  }, [metadataLoaded, conditionMask, requiredPaymentAmount, paidAmountOnchain]);
 
-  // 📋 PREVIEW METADATA: Fetch file preview info (always public)
+  // 📋 PREVIEW METADATA: Fetch file preview info from IPFS
   const fetchPreviewMetadata = useCallback(async () => {
     if (!client || !contractAddress) return;
     
     setIsLoadingPreviewMeta(true);
     try {
-      const preview = await client.readContract({
+      // Check localStorage first for metadata CID
+      if (typeof window !== 'undefined') {
+        const metadataCidKey = `metadata-cid-${id}`;
+        const cachedMetadataCid = window.localStorage.getItem(metadataCidKey);
+        
+        if (cachedMetadataCid) {
+          try {
+            const metadataRes = await fetch(`/api/ipfs/${cachedMetadataCid}`, { cache: 'no-store' });
+            
+            if (metadataRes.ok) {
+              const metadata = await metadataRes.json();
+              
+              const normalized = normaliseMetadataPayload(metadata);
+              
+              // Map NormalizedMetadata to previewMetadata state format
+              setPreviewMetadata({
+                fileName: normalized.name || '',
+                fileSize: BigInt(normalized.size || 0),
+                contentType: normalized.mimeType || '',
+                previewImageHash: normalized.ipfs || normalized.fullHash || '',
+                thumbnail: normalized.thumbnail,
+                dimensions: normalized.dimensions,
+                hasAttachment: normalized.hasAttachment ?? normalized.type === 'file',
+                previewText: normalized.message || normalized.previewText
+              });
+              return;
+            } else {
+              console.warn('⚠️ Metadata fetch failed for cached CID:', metadataRes.status);
+            }
+          } catch (err) {
+            console.warn('⚠️ Error fetching cached metadata:', err);
+          }
+        }
+      }
+
+      // Read message from contract to obtain URI and metadata hash
+      const message = await client.readContract({
         address: contractAddress,
-        abi: chronoMessageZamaAbi as any,
-        functionName: "getMessagePreview",
+        abi: sealedMessageAbi,
+        functionName: "getMessage",
         args: [id]
-      }) as [string, bigint, string, string];
+      }) as any;
+
+  // Tuple: [sender, receiver, uri, iv, authTag, ciphertextHash, metadataHash, escrowCiphertext, escrowIv, escrowAuthTag, sessionKeyCommitment, receiverEnvelopeHash, escrowKeyVersion, ...]
+      const uri = (message[2] ?? '') as string;
+      const metadataHash = (message[6] ?? '') as string;
       
-      const [fileName, fileSize, contentType, previewImageHash] = preview;
-      setPreviewMetadata({ fileName, fileSize, contentType, previewImageHash });
-      console.log("📋 Preview metadata:", { fileName, fileSize: fileSize.toString(), contentType, previewImageHash });
+      // metadataHash is Keccak256, not IPFS CID! Attempt to resolve via backend mapping.
+      const zeroHash = '0x0000000000000000000000000000000000000000000000000000000000000000';
+      let hashToFetch: string | null = null;
+
+      if (metadataHash && metadataHash !== zeroHash) {
+        const normalizedMetadataHash = metadataHash.toLowerCase();
+        const attempts = attemptedMetadataHashesRef.current;
+
+        // Check localStorage cache to see if we recently confirmed this hash is missing
+        if (typeof window !== 'undefined') {
+          try {
+            const cacheKey = `${missingMetadataHashCacheKeyPrefix}${normalizedMetadataHash}`;
+            const cached = window.localStorage.getItem(cacheKey);
+            if (cached) {
+              const parsed = JSON.parse(cached);
+              const tsValue = typeof parsed?.ts === 'number' ? parsed.ts : Number(parsed?.ts);
+              if (Number.isFinite(tsValue)) {
+                const age = Date.now() - tsValue;
+                if (age < missingMetadataHashRecheckMs) {
+                  console.debug('⏳ Skipping metadata hash lookup (recent 404 cache):', normalizedMetadataHash);
+                  attempts.add(normalizedMetadataHash);
+                }
+              }
+            }
+          } catch (cacheErr) {
+            console.warn('⚠️ Failed to read metadata hash 404 cache:', cacheErr);
+          }
+        }
+
+        if (!attempts.has(normalizedMetadataHash)) {
+          attempts.add(normalizedMetadataHash);
+
+          try {
+            const keccakRes = await fetch(`/api/metadata-mapping/by-metadata/${metadataHash}`, { cache: 'no-store' });
+            if (keccakRes.ok) {
+              const data = await keccakRes.json();
+              const fullCid = data?.record?.fullHash;
+              if (fullCid) {
+                hashToFetch = fullCid;
+
+                // Cache for future loads (sender + receiver)
+                if (typeof window !== 'undefined') {
+                  try {
+                    window.localStorage.setItem(`metadata-cid-${id}`, fullCid);
+                  } catch (storageErr) {
+                    console.warn('⚠️ Failed to cache metadata CID:', storageErr);
+                  }
+                }
+              }
+            } else if (keccakRes.status === 404) {
+              console.info('ℹ️ Metadata hash not found in mapping yet (404). Falling back to alternate resolution.');
+
+              if (typeof window !== 'undefined') {
+                try {
+                  const cacheKey = `${missingMetadataHashCacheKeyPrefix}${normalizedMetadataHash}`;
+                  const cachePayload = {
+                    ts: Date.now(),
+                    id: typeof id === 'bigint' ? id.toString() : id ?? null
+                  };
+                  window.localStorage.setItem(cacheKey, JSON.stringify(cachePayload));
+                } catch (cacheErr) {
+                  console.warn('⚠️ Failed to persist metadata hash 404 cache:', cacheErr);
+                }
+              }
+            } else {
+              console.warn('⚠️ Metadata hash resolution failed with status:', keccakRes.status);
+            }
+          } catch (err) {
+            console.warn('⚠️ Failed to resolve metadata hash via API:', err);
+          }
+        } else {
+          console.debug('🔁 Metadata hash resolution already attempted for this message. Skipping direct lookup.');
+        }
+      }
+      
+      // Try to extract short hash from URI (e.g., ipfs://Qm.../F:abc123)
+      let shortHashFromUri: string | null = null;
+      if (uri.includes('F:')) {
+        const match = uri.match(/F:([a-zA-Z0-9]{6,8})/);
+        if (match) {
+          shortHashFromUri = match[1];
+        }
+      }
+      
+      // If metadata hash resolution failed but short hash is available, try to resolve
+      if (!hashToFetch && shortHashFromUri) {
+        try {
+          const mappingRes = await fetch(`/api/metadata-mapping/${shortHashFromUri}`, { cache: 'no-store' });
+          if (mappingRes.ok) {
+            const data = await mappingRes.json();
+            const fullCid = data?.record?.fullHash;
+            if (fullCid) {
+              hashToFetch = fullCid;
+
+              // If we only had short hash, enrich backend mapping with metadata keccak for future lookups
+              if (metadataHash && metadataHash !== zeroHash) {
+                try {
+                  await fetch('/api/metadata-mapping', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                      shortHash: shortHashFromUri,
+                      fullHash: fullCid,
+                      metadataKeccak: metadataHash
+                    })
+                  });
+                } catch (persistErr) {
+                  console.warn('⚠️ Failed to persist metadata keccak for short hash mapping:', persistErr);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          console.warn('⚠️ Failed to resolve short hash:', err);
+        }
+      }
+      
+      // Fallback: use URI (will fetch encrypted payload, not ideal for preview)
+      if (!hashToFetch) {
+        hashToFetch = uri.replace('ipfs://', '');
+      }
+      
+      if (!hashToFetch || hashToFetch.length === 0) {
+        setPreviewMetadata(null);
+        return;
+      }
+
+      if (hashToFetch.includes('Stub') || hashToFetch.includes('stub')) {
+        setPreviewMetadata(null);
+        return;
+      }
+
+      // Use server-side API to fetch metadata (avoids CORS issues)
+      let metadata: any = null;
+      try {
+        const response = await fetch(`/api/ipfs/${hashToFetch}`, { cache: 'no-store' });
+
+        if (!response.ok) {
+          throw new Error(`API returned ${response.status}`);
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        
+        // Only try to parse as JSON if content type suggests it
+        if (contentType.includes('application/json') || contentType.includes('text/')) {
+          try {
+            metadata = await response.json();
+          } catch (jsonErr) {
+            metadata = null;
+          }
+        } else {
+          metadata = null;
+        }
+      } catch (err: any) {
+        console.warn('⚠️ API metadata fetch failed:', err.message);
+      }
+
+      if (!metadata) {
+        // Fallback: localStorage'dan gönderen tarafın kaydettiği bilgiyi kullan
+        const sentCache = typeof window !== 'undefined'
+          ? window.localStorage.getItem(`sent-preview-${id}`) ?? window.localStorage.getItem(`${cacheKey}-sent-preview-${id}`)
+          : null;
+        if (sentCache) {
+          try {
+            const parsed = JSON.parse(sentCache);
+            if (parsed.fileMetadata) {
+              setPreviewMetadata({
+                fileName: parsed.fileMetadata.fileName || '',
+                fileSize: BigInt(parsed.fileMetadata.fileSize || 0),
+                contentType: parsed.fileMetadata.mimeType || '',
+                previewImageHash: '',
+                thumbnail: parsed.fileMetadata.thumbnail || undefined,
+                dimensions: parsed.fileMetadata.dimensions || undefined,
+                hasAttachment: true,
+                previewText: typeof parsed.original === 'string' ? parsed.original : undefined
+              });
+              return;
+            }
+          } catch (e) {
+            console.warn('Failed to parse localStorage fallback:', e);
+          }
+        }
+
+        setPreviewMetadata(null);
+        return;
+      }
+
+      const previewInfo = metadata.preview ?? {};
+      const attachmentInfo = metadata.attachment ?? {};
+      const hasAttachment = Boolean(metadata.hasAttachment ?? metadata.type === 'file');
+
+      const fileName = typeof previewInfo.fileName === 'string'
+        ? previewInfo.fileName
+        : typeof attachmentInfo.fileName === 'string'
+        ? attachmentInfo.fileName
+        : hasAttachment
+        ? 'Attachment'
+        : 'Text Message';
+
+      const sizeSource = previewInfo.fileSize ?? attachmentInfo.fileSize ?? metadata.length ?? attachmentInfo.size ?? previewInfo.size ?? 0;
+      const numericSize = typeof sizeSource === 'string' ? Number(sizeSource) : Number(sizeSource ?? 0);
+      const safeSize = Number.isFinite(numericSize) && numericSize > 0 ? numericSize : 0;
+      const fileSize = BigInt(Math.max(0, Math.floor(safeSize)));
+
+      const mimeType = typeof previewInfo.mimeType === 'string'
+        ? previewInfo.mimeType
+        : typeof attachmentInfo.mimeType === 'string'
+        ? attachmentInfo.mimeType
+        : metadata.type === 'text'
+        ? 'text/plain'
+        : 'application/octet-stream';
+
+      const dimensions = previewInfo.dimensions || attachmentInfo.dimensions;
+      const thumbnail = typeof previewInfo.thumbnail === 'string' ? previewInfo.thumbnail : undefined;
+      const previewImageHash = sanitizeIpfsValue(previewInfo.ipfsHash ?? attachmentInfo.ipfsHash);
+
+      setPreviewMetadata({
+        fileName,
+        fileSize,
+        contentType: mimeType,
+        previewImageHash: previewImageHash ?? '',
+        thumbnail,
+        dimensions,
+        hasAttachment,
+        previewText: typeof previewInfo.text === 'string' ? previewInfo.text : undefined
+      });
+
     } catch (err) {
       console.warn("⚠️ Failed to fetch preview metadata", err);
       setPreviewMetadata(null);
@@ -631,7 +1056,8 @@ export function MessageCard({
       try {
         setIsLoadingPreview(true);
         setPreviewError(null);
-        const res = await fetch(`/api/message-preview/${id.toString()}`, { cache: "no-store" });
+        const previewUrl = `/api/message-preview/${id.toString()}${buildChainQuery()}`;
+        const res = await fetch(previewUrl, { cache: "no-store" });
         if (!res.ok) {
           if (res.status === 404) {
             setPreviewPollAttempts((prev) => {
@@ -677,94 +1103,434 @@ export function MessageCard({
         clearInterval(intervalId);
       }
     };
-  }, [id, localUnlocked, isSent, previewDataUrl, previewPollingDisabled]);
-
-  // Zama userDecrypt requires signed permission - this helper manages the keypair session
-  const decryptWithUser = useCallback(async (handleBigInt: bigint) => {
-    if (!fhe || !walletClient || !userAddress || !contractAddress) {
-      throw new Error("Missing FHE SDK, wallet, or contract address");
-    }
-
-    console.log('🔐 Starting userDecrypt flow for handle:', handleBigInt.toString(16));
-
-    // Generate or reuse keypair
-    let session: any;
-    try {
-      const stored = localStorage.getItem('fhe-decrypt-session');
-      if (stored) {
-        session = JSON.parse(stored);
-        const expires = session.startTimestamp + session.durationDays * 86400;
-        if (expires < Math.floor(Date.now() / 1000) + 60) {
-          session = null; // expired
-        }
-      }
-    } catch {}
-
-    if (!session) {
-      const keypair = fhe.generateKeypair();
-      session = {
-        publicKey: keypair.publicKey,
-        privateKey: keypair.privateKey,
-        startTimestamp: Math.floor(Date.now() / 1000),
-        durationDays: 7,
-      };
-      localStorage.setItem('fhe-decrypt-session', JSON.stringify(session));
-    }
-
-    // Create EIP712 typed data
-    const typedData = fhe.createEIP712(
-      session.publicKey,
-      [contractAddress],
-      session.startTimestamp,
-      session.durationDays
-    );
-
-    console.log('🖋️ Requesting wallet signature for decrypt permission...');
-
-    // Sign with wallet
-    const signature = await walletClient.signTypedData({
-      account: userAddress as `0x${string}`,
-      ...typedData,
-    });
-
-    // Convert bigint handle to hex
-    const handleHex = `0x${handleBigInt.toString(16).padStart(64, '0')}`;
-
-    console.log('📡 Calling userDecrypt...', { handleHex });
-
-    // Call userDecrypt
-    const result = await fhe.userDecrypt(
-      [{ handle: handleHex, contractAddress }],
-      session.privateKey,
-      session.publicKey,
-      signature,
-      [contractAddress],
-      userAddress,
-      session.startTimestamp,
-      session.durationDays
-    );
-
-    console.log('✅ userDecrypt result:', result);
-
-    const keys = Object.keys(result ?? {});
-    if (!keys.length) {
-      throw new Error("Decryption returned no values");
-    }
-
-    return convertDecryptedValue(result[keys[0]], contentType);
-  }, [fhe, walletClient, userAddress, contractAddress, contentType]);
+  }, [id, localUnlocked, isSent, previewDataUrl, previewPollingDisabled, buildChainQuery]);
 
   const decryptCiphertext = useCallback(async (handleValue: unknown) => {
-    console.log('🔓 Decrypt attempt:', { type: typeof handleValue, value: handleValue });
+    let currentDecryptOptions: DecryptOptions | undefined;
 
-  // Zama returns euint256 handles as bigint
-    if (typeof handleValue === 'bigint') {
-      return await decryptWithUser(handleValue);
+    const normalizeAddress = (value: unknown): string =>
+      typeof value === 'string' ? value.toLowerCase() : '';
+
+    const resolveReceiverPublicKeyBytes = async (receiverAddress: string): Promise<Uint8Array | null> => {
+      if (typeof receiverAddress !== 'string' || !receiverAddress.startsWith('0x')) {
+        return null;
+      }
+
+      let onchainKey: string | null = null;
+
+      if (client && contractAddress) {
+        try {
+          onchainKey = await client.readContract({
+            address: contractAddress,
+            abi: sealedMessageAbi as any,
+            functionName: "getEncryptionKey" as any,
+            args: [receiverAddress as `0x${string}`]
+          }) as unknown as string;
+
+        } catch (err) {
+          console.warn('⚠️ Failed to fetch receiver public key from contract:', err);
+        }
+      }
+
+      if (onchainKey && onchainKey !== '0x' && onchainKey.length >= 66) {
+        return hexToBytes(onchainKey);
+      }
+
+      try {
+        const fallback = generateFallbackKeyPair(receiverAddress);
+        return new Uint8Array(fallback.publicKey);
+      } catch (fallbackErr) {
+        console.warn('⚠️ Failed to derive fallback receiver key:', fallbackErr);
+        return null;
+      }
+    };
+
+    const processDecryptResponse = async (
+      payload: {
+        messageId?: string;
+        uri?: string;
+        iv?: string;
+        authTag?: string;
+        ciphertextHash?: string;
+        escrowCiphertext?: string;
+        escrowIv?: string;
+        escrowAuthTag?: string;
+        sessionKeyCommitment?: string;
+        receiverEnvelopeHash?: string;
+        escrowKeyVersion?: number;
+      },
+      debugInfo?: Record<string, unknown>
+    ) => {
+      const {
+        messageId,
+        uri,
+        iv,
+        authTag,
+        ciphertextHash,
+        escrowCiphertext,
+        escrowIv,
+        escrowAuthTag,
+        sessionKeyCommitment,
+        receiverEnvelopeHash,
+        escrowKeyVersion
+      } = payload;
+
+      if (!uri) {
+        throw new Error('Message URI missing');
+      }
+
+      if (!sessionKeyCommitment) {
+        console.warn('⚠️ Session key commitment missing for escrow-protected message', {
+          receiverEnvelopeHash,
+          escrowKeyVersion,
+          debugInfo
+        });
+        throw new Error('Session key commitment unavailable for decrypt request');
+      }
+
+      const decryptRequestPayload: Record<string, unknown> = {
+        messageId: messageId ?? id.toString(),
+        uri,
+        iv,
+        authTag,
+        ciphertextHash,
+        sessionKeyCommitment,
+        receiverEnvelopeHash,
+        escrowCiphertext,
+        escrowIv,
+        escrowAuthTag
+      };
+
+      if (typeof messageChainId === 'number' && Number.isFinite(messageChainId)) {
+        decryptRequestPayload.chainId = messageChainId;
+      }
+      if (messageChainKey) {
+        decryptRequestPayload.chainKey = messageChainKey;
+      }
+
+      const response = await fetch('/api/decrypt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(decryptRequestPayload)
+      });
+
+      if (!response.ok) {
+        const text = await response.text().catch(() => response.statusText);
+        throw new Error(`Decrypt API error ${response.status}: ${text}`);
+      }
+
+      const result = await response.json();
+
+      if (!result.success) {
+        throw new Error(result.error || 'Decrypt API failed');
+      }
+
+      if (result.isStub && result.decrypted) {
+        return result.decrypted as string;
+      }
+
+      if (result.ciphertextHashVerified === false) {
+        console.warn('⚠️ Ciphertext hash mismatch reported by API');
+      }
+
+      const hasCiphertext = typeof result.ciphertext === 'string' && result.ciphertext.length > 2;
+      const hasEnvelope = result.receiverEnvelope && typeof result.receiverEnvelope?.ciphertext === 'string';
+
+      if (!hasCiphertext || !hasEnvelope) {
+        const metadataSections: string[] = [];
+
+        if (result.decrypted && typeof result.decrypted === 'string') {
+          metadataSections.push(`Preview text:\n${result.decrypted}`);
+        }
+
+        if (typeof result.message === 'string' && result.message.trim().length > 0) {
+          metadataSections.push(`API message: ${result.message}`);
+        }
+
+        if (result.metadata) {
+          try {
+            metadataSections.push(`Metadata JSON:\n${JSON.stringify(result.metadata, null, 2)}`);
+          } catch {
+            metadataSections.push('Metadata JSON: [unable to stringify]');
+          }
+        }
+
+        if (result.note && typeof result.note === 'string') {
+          metadataSections.push(`Note: ${result.note}`);
+        }
+
+        if (metadataSections.length) {
+          return [
+            '🔓 IPFS metadata retrieved (encryption pipeline not ready yet)',
+            ...metadataSections
+          ].join('\n\n');
+        }
+
+        throw new Error('Encrypted payload not available yet');
+      }
+
+      // Import crypto utilities for real decryption
+      const { hexToBytes } = await import('@/lib/crypto');
+      const { decryptMessage } = await import('@/lib/decryption');
+
+      const ciphertextBytes = hexToBytes(result.ciphertext);
+      const authTagBytes = hexToBytes(result.authTag ?? authTag ?? '');
+      const ivBytes = hexToBytes(result.iv ?? iv ?? '');
+      const senderPubKeyBytes = hexToBytes(result.senderPublicKey ?? '');
+      const envelopeCipherBytes = hexToBytes(result.receiverEnvelope?.ciphertext ?? '');
+      const envelopeIvBytes = hexToBytes(result.receiverEnvelope?.iv ?? '');
+      const envelopeAuthTagBytes = hexToBytes(result.receiverEnvelope?.authTag ?? '');
+      const sessionCommitmentHex = result.sessionKeyCommitment ?? sessionKeyCommitment ?? undefined;
+
+      if (senderPubKeyBytes.length !== 33) {
+        throw new Error('Sender public key missing in release payload');
+      }
+
+      if (envelopeCipherBytes.length === 0 || envelopeIvBytes.length === 0 || envelopeAuthTagBytes.length === 0) {
+        throw new Error('Receiver envelope incomplete in release payload');
+      }
+
+      // Check if we have wallet access for decryption
+      if (typeof window !== 'undefined' && (window as any).ethereum && userAddress) {
+        try {
+          const { ethers } = await import('ethers');
+          const provider = new ethers.BrowserProvider((window as any).ethereum);
+          const signer = await provider.getSigner();
+
+          // Create wallet client wrapper
+          const walletClient = {
+            signMessage: async ({ message }: { account?: string; message: string }) => {
+              return await signer.signMessage(message);
+            }
+          };
+
+          const decrypted = await decryptMessage({
+            ciphertext: ciphertextBytes,
+            authTag: authTagBytes,
+            iv: ivBytes,
+            senderPublicKey: senderPubKeyBytes,
+            receiverEnvelope: {
+              ciphertext: envelopeCipherBytes,
+              iv: envelopeIvBytes,
+              authTag: envelopeAuthTagBytes
+            },
+            sessionKeyCommitment: sessionCommitmentHex,
+            walletClient,
+            userAddress,
+            options: currentDecryptOptions
+          });
+
+          // ✅ If decrypted content is a file pointer, resolve metadata immediately
+          if (decrypted.startsWith('F:')) {
+            const shortHash = decrypted.substring(2).trim();
+            
+            try {
+              // Try localStorage first
+              const mappingKey = `file-metadata-${shortHash}`;
+              let fullHash = localStorage.getItem(mappingKey);
+              
+              // If not in localStorage, try backend API
+              if (!fullHash) {
+                const res = await fetch(`/api/metadata-mapping/${shortHash}`, { cache: 'no-store' });
+                if (res.ok) {
+                  const data = await res.json();
+                  fullHash = data?.record?.fullHash;
+                  if (fullHash) {
+                    localStorage.setItem(mappingKey, fullHash);
+                  }
+                }
+              }
+              
+              // Fetch actual metadata from IPFS
+              if (fullHash) {
+                const metaRes = await fetch(`/api/ipfs/${fullHash}`, { cache: 'no-store' });
+                if (metaRes.ok) {
+                  const metadata = await metaRes.json();
+                  
+                  const normalized = normaliseMetadataPayload(metadata, {
+                    shortHash,
+                    fullHash
+                  });
+
+                  // Update fileMetadataState with normalized structure
+                  setFileMetadataState(normalized);
+
+                  // Keep original pointer token so downstream logic renders attachment UI
+                  return `F:${shortHash}`;
+                }
+              }
+              
+              // Fallback if metadata couldn't be resolved
+              console.warn('⚠️ Could not resolve metadata for:', shortHash);
+              return decrypted;
+              
+            } catch (metaErr) {
+              console.error('❌ Metadata resolution failed:', metaErr);
+              return decrypted;
+            }
+          }
+          
+          return decrypted;
+
+        } catch (decryptErr: any) {
+          // Check if this is expected old format failure
+          if (decryptErr.message && decryptErr.message.includes('Decryption failed')) {
+            console.warn('⚠️ Old message format detected, decryption not supported');
+            return `📜 Legacy Message Format\n\n` +
+              `This message was created with an older encryption format.\n` +
+              `Decryption is only available for messages sent with the current format.`;
+          }
+          
+          console.error('❌ Client-side decryption failed:', decryptErr);
+          return `❌ Decryption failed: ${decryptErr.message}\n\n` +
+            `Please make sure you're using the correct wallet address.`;
+        }
+      }
+
+      // Fallback: Show encrypted info if no wallet access
+      return `✅ IPFS content fetched successfully!\n\n` +
+        `📦 Ciphertext: ${ciphertextBytes.length} bytes\n` +
+        `🧾 Envelope: ${envelopeCipherBytes.length} bytes\n` +
+        `🔐 IV length: ${ivBytes.length} bytes\n\n` +
+        `⚠️ Connect your wallet to decrypt this message.`;
+    };
+
+    // SealedMessage: getMessage returns tuple (array), not a struct
+    if (Array.isArray(handleValue)) {
+      const [
+        sender,
+        receiver,
+        uri,
+        iv,
+        authTag,
+        ciphertextHash,
+        metadataHash,
+        escrowCiphertext,
+        escrowIv,
+        escrowAuthTag,
+        sessionKeyCommitment,
+        receiverEnvelopeHash,
+        escrowKeyVersion
+      ] = handleValue;
+
+      try {
+        if (userAddress && typeof sender === 'string' && typeof receiver === 'string') {
+          const viewer = normalizeAddress(userAddress);
+          const senderLower = normalizeAddress(sender);
+          const receiverLower = normalizeAddress(receiver);
+
+          if (viewer === receiverLower) {
+            currentDecryptOptions = { role: 'receiver' };
+          } else if (viewer === senderLower) {
+            const receiverKeyBytes = await resolveReceiverPublicKeyBytes(receiver);
+            if (!receiverKeyBytes || receiverKeyBytes.length === 0) {
+              throw new Error('Receiver public key unavailable for sender-side decrypt');
+            }
+            currentDecryptOptions = { role: 'sender', peerPublicKey: receiverKeyBytes };
+          } else {
+            currentDecryptOptions = undefined;
+          }
+
+          // role resolved; decrypt path will use currentDecryptOptions
+        }
+
+        return await processDecryptResponse({
+          messageId: id.toString(),
+          uri,
+          iv,
+          authTag,
+          ciphertextHash,
+          escrowCiphertext,
+          escrowIv,
+          escrowAuthTag,
+          sessionKeyCommitment,
+          receiverEnvelopeHash,
+          escrowKeyVersion
+        }, {
+          tupleSender: sender,
+          tupleReceiver: receiver,
+          ciphertextHash,
+          metadataHash,
+          ivLength: typeof iv === 'string' ? iv.length : undefined,
+          authTagLength: typeof authTag === 'string' ? authTag.length : undefined,
+          sessionKeyCommitment
+        });
+      } catch (apiErr: any) {
+        console.error('❌ Decrypt failed:', apiErr);
+        const metaDetails: string[] = [];
+        if (typeof iv === 'string') metaDetails.push(`- IV length: ${iv.length} chars`);
+        if (typeof authTag === 'string') metaDetails.push(`- AuthTag length: ${authTag.length} chars`);
+        if (typeof sessionKeyCommitment === 'string') metaDetails.push(`- Session commitment: ${sessionKeyCommitment}`);
+        const metadataBlock = metaDetails.length ? `\n\nMetadata:\n${metaDetails.join('\n')}` : '';
+        return `🔐 Encrypted message at: ${uri}\n\n(Decryption failed: ${apiErr.message})${metadataBlock}`;
+      }
+    }
+
+    // SealedMessage: getMessage can also return object, not a handle
+    if (typeof handleValue === 'object' && handleValue !== null) {
+      const message = handleValue as any;
+      const {
+        uri,
+        iv,
+        authTag,
+        ciphertextHash,
+        escrowCiphertext,
+        escrowIv,
+        escrowAuthTag,
+        sessionKeyCommitment,
+        receiverEnvelopeHash,
+        escrowKeyVersion,
+        senderPublicKey
+      } = message;
+
+      if (userAddress && typeof message.sender === 'string' && typeof message.receiver === 'string') {
+        const viewer = normalizeAddress(userAddress);
+        const senderLower = normalizeAddress(message.sender);
+        const receiverLower = normalizeAddress(message.receiver);
+
+        if (viewer === receiverLower) {
+          currentDecryptOptions = { role: 'receiver' };
+        } else if (viewer === senderLower) {
+          const receiverKeyBytes = await resolveReceiverPublicKeyBytes(message.receiver);
+          if (!receiverKeyBytes || receiverKeyBytes.length === 0) {
+            throw new Error('Receiver public key unavailable for sender-side decrypt');
+          }
+          currentDecryptOptions = { role: 'sender', peerPublicKey: receiverKeyBytes };
+        } else {
+          currentDecryptOptions = undefined;
+        }
+
+        // role resolved; decrypt path will use currentDecryptOptions
+      }
+
+      try {
+        return await processDecryptResponse({
+          messageId: id.toString(),
+          uri,
+          iv,
+          authTag,
+          ciphertextHash,
+          escrowCiphertext,
+          escrowIv,
+          escrowAuthTag,
+          sessionKeyCommitment,
+          receiverEnvelopeHash,
+          escrowKeyVersion
+        });
+      } catch (apiErr: any) {
+        console.error('❌ Decrypt failed:', apiErr);
+        const metaDetails: string[] = [];
+        if (typeof iv === 'string') metaDetails.push(`- IV length: ${iv.length} chars`);
+        if (typeof authTag === 'string') metaDetails.push(`- AuthTag length: ${authTag.length} chars`);
+        if (typeof sessionKeyCommitment === 'string') metaDetails.push(`- Session commitment: ${sessionKeyCommitment}`);
+        const metadataBlock = metaDetails.length ? `\n\nMetadata:\n${metaDetails.join('\n')}` : '';
+        return `🔐 Encrypted message at: ${uri}\n\n(Decryption failed: ${apiErr.message})${metadataBlock}`;
+      }
     }
 
     // Fallback for hex string (legacy)
     if (typeof handleValue !== 'string') {
-      throw new Error(`Expected bigint or string, got ${typeof handleValue}`);
+      throw new Error(`Expected object or string, got ${typeof handleValue}`);
     }
 
     const sanitized = stripHexPrefix(handleValue);
@@ -772,28 +1538,11 @@ export function MessageCard({
       throw new Error("Ciphertext is empty");
     }
 
-    // Prefer user decrypt path for handles encoded as hex strings
-    try {
-      const asBigint = BigInt(handleValue);
-      return await decryptWithUser(asBigint);
-    } catch (userDecryptErr) {
-      console.warn('⚠️ Hex handle userDecrypt failed, falling back to public decrypt', userDecryptErr);
-    }
-
-    const bytes = hexToBytes(handleValue);
-    const decryptedResults = await fhe.publicDecrypt([bytes]);
-    const keys = Object.keys(decryptedResults ?? {});
-    if (!keys.length) {
-      throw new Error("Decryption returned no values");
-    }
-
-    const firstKey = keys[0];
-    return convertDecryptedValue(decryptedResults[firstKey], contentType);
-  }, [fhe, contentType, decryptWithUser]);
+    throw new Error("Legacy ciphertext handles are no longer supported. Please request the sender to resend using the updated encryption flow.");
+  }, [contentType, id]);
 
   // Helper: try resolving shortHash via backend, proxy, or Pinata keyvalue search
   const tryResolveShortHash = async (shortHash: string): Promise<string | null> => {
-    console.log('🔎 tryResolveShortHash:', shortHash);
     const persistMapping = async (fullHash: string) => {
       try {
         await fetch('/api/metadata-mapping', {
@@ -873,14 +1622,12 @@ export function MessageCard({
   useEffect(() => {
     const fetchFileMetadata = async () => {
       if (!messageContent || !messageContent.startsWith('F:')) {
-        console.log('📝 Not a file message, content:', messageContent?.substring(0, 50));
         return;
       }
       if (fileMetadataState) return;
 
       // Extract full hash after "F:" prefix (could be 6-char short or full IPFS hash)
-      const hashPart = messageContent.substring(2).trim();
-      console.log('📎 Detected file message! Hash part:', hashPart);
+  const hashPart = messageContent.substring(2).trim();
 
       // Determine if it's a short hash (<=8 chars) or full IPFS hash (46+ chars)
       const isShortHash = hashPart.length <= 8;
@@ -941,7 +1688,6 @@ export function MessageCard({
             const rows: any[] = json?.rows ?? [];
             const match = rows.find((row) => row?.metadata?.keyvalues?.shortHash === hashFragment);
             if (match?.ipfs_pin_hash) {
-              console.log('🌐 Resolved metadata hash via Pinata (keyvalues):', match.ipfs_pin_hash);
               return match.ipfs_pin_hash as string;
             }
           } else {
@@ -970,7 +1716,6 @@ export function MessageCard({
             });
 
             if (match?.ipfs_pin_hash) {
-              console.log('🌐 Resolved metadata hash via Pinata (fallback):', match.ipfs_pin_hash);
               return match.ipfs_pin_hash as string;
             }
           } else {
@@ -987,14 +1732,12 @@ export function MessageCard({
 
       // If it's already a full IPFS hash, use it directly
       if (!isShortHash && hashPart.length >= 46) {
-        console.log('✅ Using full IPFS hash from message content:', hashPart);
         fullHash = hashPart;
       }
 
       if (!fullHash && isShortHash) {
         const serverHash = await fetchMappingFromServer(shortHash);
         if (serverHash) {
-          console.log('✅ Resolved metadata hash via backend:', serverHash);
           fullHash = serverHash;
           try {
             localStorage.setItem(mappingKey, serverHash);
@@ -1027,17 +1770,14 @@ export function MessageCard({
       }
 
       if (fullHash) {
-        console.log('✅ Full metadata hash resolved:', fullHash);
         try {
           const url = `/api/ipfs/${fullHash}`;
-          console.log('📡 Fetching metadata from:', url);
           const response = await fetch(url);
           if (!response.ok) {
             console.error('❌ Metadata fetch failed:', response.status, response.statusText);
             throw new Error('Metadata fetch failed');
           }
           const data = await response.json();
-          console.log('✅ File metadata loaded:', data);
           const normalized = normaliseMetadataPayload(data, { shortHash, fullHash: fullHash ?? (isShortHash ? undefined : hashPart) });
           setFileMetadataState(normalized);
           setIsLoadingFileMetadata(false);
@@ -1057,38 +1797,12 @@ export function MessageCard({
     fetchFileMetadata();
   }, [messageContent, fileMetadataState]);
   
-  // Artık sadece Zama kullanıyoruz
-  const isZamaContract = true;
+  // Artık sadece Sealed kullanıyoruz
+  const isSealedContract = true;
   
-  // Sadece Zama ABI kullan
-  const selectedAbi = chronoMessageZamaAbi;
+  // Sadece Sealed ABI kullan
+  const selectedAbi = sealedMessageAbi;
   
-  // Zama'da payment yok, sadece time-lock
-  const isPaymentLocked = false; // Zama supports only time-lock
-  const canUnlockWithPayment = false;
-  
-  const { config: paymentConfig } = usePrepareContractWrite({
-    address: contractAddress,
-    abi: chronoMessageZamaAbi as any,
-    functionName: "readMessage" as any, // Zama'da payToUnlock yok
-    args: undefined,
-    value: undefined,
-    enabled: false // Payment unlock disabled for Zama
-  });
-  
-  const { 
-    data: paymentTxData, 
-    isLoading: isPaymentPending, 
-    write: unlockWithPayment 
-  } = useContractWrite(paymentConfig);
-  
-  const { 
-    isLoading: isPaymentConfirming, 
-    isSuccess: isPaymentSuccess 
-  } = useWaitForTransaction({
-    hash: paymentTxData?.hash
-  });
-
   // Eğer mesaj zaten okunmuşsa (isRead: true), direkt içeriği yükle
   useEffect(() => {
     const loadContentIfRead = async () => {
@@ -1096,24 +1810,17 @@ export function MessageCard({
       
       // ✅ Cache'de varsa hiçbir şey yapma (state'te zaten yüklü)
       if (messageContent) {
-        console.log('✅ Message content already loaded from cache');
-        return;
-      }
-      
-      if (!fhe || !isFheReady) {
-        console.log('⏳ Waiting for FHE to be ready before loading read message...');
         return;
       }
 
-      console.log('📡 Loading previously read message (no cache found)...');
       setIsLoadingContent(true);
       setDecryptError(null);
       let ciphertext: unknown = null;
       try {
         const content = await client.readContract({
           address: contractAddress,
-          abi: chronoMessageZamaAbi as any,
-          functionName: "readMessage" as any,
+          abi: sealedMessageAbi as any,
+          functionName: "getMessage" as any,
           args: [id],
           account: userAddress as `0x${string}`
         });
@@ -1142,7 +1849,6 @@ export function MessageCard({
           const existing = JSON.parse(localStorage.getItem('msg-debug-log') || '[]');
           existing.push(entry);
           localStorage.setItem('msg-debug-log', JSON.stringify(existing));
-          console.log('🐛 Debug saved (received-decrypted):', entry);
         } catch (e) {
           console.warn('Failed to write debug log (received-decrypted):', e);
         }
@@ -1157,32 +1863,198 @@ export function MessageCard({
     };
     
     loadContentIfRead();
-  }, [isRead, isSent, localUnlocked, client, userAddress, id, messageContent, contractAddress, fhe, isFheReady, decryptCiphertext]);
+  }, [isRead, isSent, localUnlocked, client, userAddress, id, messageContent, contractAddress, decryptCiphertext]);
+
+  useEffect(() => {
+    if (!isSent) {
+      return;
+    }
+
+    setLocalUnlocked(true);
+    setLocalIsRead(true);
+
+    if (typeof window === 'undefined' || !cacheKey) {
+      return;
+    }
+
+    try {
+      localStorage.setItem(`${cacheKey}-unlocked-${id}`, 'true');
+      localStorage.setItem(`${cacheKey}-read-${id}`, 'true');
+    } catch (err) {
+      console.warn('⚠️ Failed to persist sent message unlock state:', err);
+    }
+  }, [isSent, cacheKey, id]);
 
   const hasTimeCondition = metadataLoaded && (conditionMask & 0x01) !== 0;
   const paymentFlagIsSet = metadataLoaded && (conditionMask & 0x02) !== 0;
   const paymentAmountResolved = requiredPaymentAmount !== null;
   const paymentAmountValue = paymentAmountResolved ? (requiredPaymentAmount as bigint) : null;
+  const paidAmountValue = paidAmountOnchain ?? 0n;
   const hasPaymentCondition = paymentFlagIsSet && paymentAmountValue !== null && paymentAmountValue > 0n;
-  const paymentReady = !paymentFlagIsSet || paymentAmountResolved;
+  const outstandingPayment = hasPaymentCondition && paymentAmountValue !== null
+    ? (paymentAmountValue > paidAmountValue ? paymentAmountValue - paidAmountValue : 0n)
+    : 0n;
+  const paymentSettled = hasPaymentCondition && outstandingPayment === 0n;
+  const paymentReady = !paymentFlagIsSet || (paymentAmountResolved && paidAmountOnchain !== null);
   
-  // ✅ Zaman kontrolü: on-chain unlocked veya client-side zaman dolmuş
+  // ✅ Sealedn kontrolü: on-chain unlocked veya client-side zaman dolmuş
   const currentTimestamp = Math.floor(Date.now() / 1000);
   const unlockTimestamp = Number(unlockTime);
   const clientTimeReady = unlockTimestamp > 0 && currentTimestamp >= unlockTimestamp;
   const timeReady = !hasTimeCondition || onchainUnlocked === true || clientTimeReady;
   
-  const shouldAttachPayment = hasPaymentCondition;
-  const canPrepareRead = !!contractAddress && !!userAddress && !!chain?.id && !isSent && !messageContent && metadataLoaded && paymentReady && timeReady;
+  const shouldAttachPayment = hasPaymentCondition && outstandingPayment > 0n;
+  const canPrepareRead = !!contractAddress && !!userAddress && !!chain?.id && !isSent && !messageContent && metadataLoaded && paymentReady && timeReady && !shouldAttachPayment;
   const paymentIsFree = !requiredPaymentAmount || requiredPaymentAmount === 0n;
-  const paymentDisplay = metadataLoaded ? formatPaymentAmount(requiredPaymentAmount) : null;
-  const paymentBadgeClass = metadataLoaded ? (paymentIsFree ? "text-emerald-300" : "text-amber-300") : "text-slate-500 animate-pulse";
-  const paymentRequirementLabel = hasPaymentCondition && paymentAmountValue !== null
-    ? formatPaymentAmount(paymentAmountValue, { includeUnit: true, zeroLabel: "0 ETH" })
-    : null;
+  const paymentDisplay = metadataLoaded ? formatPaymentAmount(outstandingPayment, { includeUnit: true, zeroLabel: "0 ETH" }) : null;
+  const paymentBadgeClass = metadataLoaded
+    ? (paymentIsFree || paymentSettled ? "text-emerald-300" : "text-amber-300")
+    : "text-slate-500 animate-pulse";
+  const paymentRequirementLabel = shouldAttachPayment ? paymentDisplay : (paymentSettled ? "Paid" : null);
   const fallbackConditionMask = conditionType ?? 0;
   const fallbackHasTime = (fallbackConditionMask & 0x01) !== 0;
   const fallbackHasPayment = (fallbackConditionMask & 0x02) !== 0 && typeof requiredPayment === 'bigint' && requiredPayment > 0n;
+  const canUnlockWithPayment = shouldAttachPayment && !!contractAddress && !!userAddress && !!chain?.id && !isSent;
+  const paymentValueToSend = canUnlockWithPayment ? outstandingPayment : undefined;
+  const summaryPaymentBadgeValue =
+    paymentDisplay ?? (metadataLoaded ? (paymentIsFree ? "0 ETH" : "Pending...") : "Loading...");
+  const summaryPaymentDescription = metadataLoaded
+    ? paymentIsFree
+      ? (isSent
+          ? "Receiver does not need to pay to read this message."
+          : "No payment is required to read this message.")
+      : (isSent
+          ? `Receiver must pay ${paymentDisplay ?? "the required amount"} to open this message.`
+          : `You must pay ${paymentDisplay ?? "the required amount"} to open this message.`)
+    : "Loading payment info...";
+  const messageSummaryTitle = isSent ? "Message Summary (Receiver View)" : "Message Summary";
+
+  const { config: paymentConfig, error: preparePaymentError } = usePrepareContractWrite({
+    address: contractAddress,
+    abi: sealedMessageAbi as any,
+    functionName: "payToUnlock",
+    args: [id],
+    value: paymentValueToSend,
+    enabled: Boolean(canUnlockWithPayment && outstandingPayment > 0n),
+    chainId: chain?.id,
+    account: userAddress as `0x${string}` | undefined
+  });
+
+  const {
+    data: paymentTxData,
+    isLoading: isPaymentPending,
+    write: unlockWithPayment,
+    error: paymentWriteError
+  } = useContractWrite(paymentConfig);
+
+  const paymentHashToTrack = paymentTxData?.hash ?? manualPaymentHash ?? undefined;
+
+  const {
+    isLoading: isPaymentConfirming,
+    isSuccess: isPaymentSuccess
+  } = useWaitForTransaction({
+    hash: paymentHashToTrack
+  });
+
+  const canSubmitPayment = useMemo(
+    () => Boolean(canUnlockWithPayment && (unlockWithPayment || walletClient)),
+    [canUnlockWithPayment, unlockWithPayment, walletClient]
+  );
+
+  const isPaymentActionPending = isPaymentPending || isManualPaymentPending || isPaymentConfirming;
+
+  const handlePaymentClick = useCallback(async () => {
+    if (!shouldAttachPayment) {
+      return;
+    }
+
+    setDecryptError(null);
+
+    if (!canUnlockWithPayment) {
+      if (!userAddress) {
+        setDecryptError("Please connect your wallet to unlock this message with a payment.");
+      } else if (!contractAddress) {
+        setDecryptError("Contract address is unavailable. Please refresh the page and try again.");
+      } else if (!activeChainId) {
+        setDecryptError("Active network could not be detected. Reconnect your wallet and retry.");
+      } else {
+        setDecryptError("Payment details are still loading. Please wait a moment and try again.");
+      }
+      return;
+    }
+
+    if (isPaymentActionPending) {
+      return;
+    }
+
+    if (unlockWithPayment) {
+      try {
+        unlockWithPayment();
+        return;
+      } catch (err) {
+        setDecryptError(`Payment could not be initiated: ${toReadableError(err)}`);
+        return;
+      }
+    }
+
+    if (!walletClient || outstandingPayment <= 0n) {
+      setDecryptError("Payment quote unavailable. Please wait for the payment info to load and retry.");
+      return;
+    }
+
+    try {
+      setIsManualPaymentPending(true);
+      setManualPaymentHash(null);
+      const txHash = await walletClient.writeContract({
+        address: contractAddress,
+        abi: sealedMessageAbi as any,
+        functionName: "payToUnlock",
+        args: [id],
+        account: userAddress as `0x${string}`,
+        value: outstandingPayment
+      });
+
+      if (txHash) {
+        setManualPaymentHash(txHash);
+      }
+    } catch (err) {
+      setDecryptError(`Payment failed: ${toReadableError(err)}`);
+    } finally {
+      setIsManualPaymentPending(false);
+    }
+  }, [
+    shouldAttachPayment,
+    canUnlockWithPayment,
+    unlockWithPayment,
+    walletClient,
+    outstandingPayment,
+    contractAddress,
+    id,
+    userAddress,
+    activeChainId,
+    isPaymentActionPending
+  ]);
+
+  useEffect(() => {
+    if (preparePaymentError) {
+      console.error("❌ payToUnlock prepare error:", toReadableError(preparePaymentError));
+    }
+  }, [preparePaymentError]);
+
+  useEffect(() => {
+    if (paymentWriteError) {
+      const readable = toReadableError(paymentWriteError);
+      console.error("❌ payToUnlock write error:", readable);
+      setDecryptError((previous) => previous ?? `Payment could not be sent: ${readable}`);
+    }
+  }, [paymentWriteError]);
+
+  useEffect(() => {
+    if (isPaymentSuccess) {
+      setManualPaymentHash(null);
+    }
+  }, [isPaymentSuccess]);
+
   const headerBadges = useMemo(() => {
     const badges: { key: string; label: string; className: string }[] = [];
     const timeBadge = {
@@ -1190,11 +2062,17 @@ export function MessageCard({
       label: '⏰ Time Lock',
       className: 'bg-amber-500/20 text-amber-300 border border-amber-400/30'
     };
-    const paymentBadge = {
-      key: 'payment',
-      label: paymentRequirementLabel ? `💰 Payment · ${paymentRequirementLabel}` : '💰 Payment Required',
-      className: 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30'
-    };
+    const paymentBadge = paymentSettled
+      ? {
+          key: 'payment',
+          label: '💰 Payment Complete',
+          className: 'bg-emerald-600/20 text-emerald-300 border border-emerald-400/30'
+        }
+      : {
+          key: 'payment',
+          label: paymentRequirementLabel ? `💰 Payment · ${paymentRequirementLabel}` : '💰 Payment Required',
+          className: 'bg-cyan-500/20 text-cyan-300 border border-cyan-400/30'
+        };
     const instantBadge = {
       key: 'instant',
       label: '⚡ Instant Access',
@@ -1229,44 +2107,252 @@ export function MessageCard({
   const fileSizeLabel = previewMetadata && previewMetadata.fileSize > 0n ? formatFileSize(previewMetadata.fileSize) : null;
   const contentTypeLabel = previewMetadata?.contentType?.trim() ? previewMetadata.contentType.trim() : null;
   const previewImageUrl = previewMetadata?.previewImageHash ? `/api/ipfs/${previewMetadata.previewImageHash}` : null;
-  const hasAnyPreviewInfo = Boolean(fileNameLabel || fileSizeLabel || contentTypeLabel || previewMetadata?.previewImageHash);
+  const hasAnyPreviewInfo = Boolean(
+    fileNameLabel ||
+    fileSizeLabel ||
+    contentTypeLabel ||
+    previewMetadata?.previewImageHash ||
+    previewDataUrl
+  );
+  const showLoadingPreview = isLoadingPreview && !previewDataUrl && !previewMetadata;
+  const legacyAttachmentSummary = useMemo(() => {
+    if (typeof window !== "undefined" && cacheKey) {
+      try {
+        const cached = localStorage.getItem(`${cacheKey}-content-${id}`);
+        if (cached && cached.startsWith("FILE:")) {
+          return (
+            <div className="rounded-lg bg-purple-900/20 border border-purple-400/40 p-3 space-y-2">
+              <div className="flex items-center gap-2 text-sm text-purple-300">
+                <span>📎</span>
+                <span className="font-semibold">Attached File</span>
+              </div>
+              <p className="text-xs text-purple-200 italic">
+                {isSent
+                  ? "You attached a file to this message."
+                  : "⚠️ This message includes a file. Confirm the sender before unlocking."
+                }
+              </p>
+              {!isSent && (
+                <div className="text-xs text-slate-300 space-y-1">
+                  <div>
+                    <span className="text-slate-500">Sender:</span>{" "}
+                    <code className="font-mono text-purple-200">
+                      {sender.substring(0, 10)}...{sender.substring(sender.length - 8)}
+                    </code>
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        }
+      } catch {
+        // ignore localStorage lookup failures
+      }
+    }
 
-  // ✅ readMessage transaction - payment desteği ile (usePrepareContractWrite)
+    if (contentType === 1) {
+      return (
+        <div className="rounded-lg bg-purple-900/20 border border-purple-400/40 p-3 space-y-2">
+          <div className="flex items-center gap-2 text-sm text-purple-300">
+            <span>📎</span>
+            <span className="font-semibold">File Attached</span>
+          </div>
+          <p className="text-xs text-purple-200 italic">
+            ⚠️ This message contains a file. Verify the sender before unlocking and opening.
+          </p>
+          <div className="text-xs text-slate-300 space-y-1">
+            <div>
+              <span className="text-slate-500">Sender:</span>{" "}
+              <code className="font-mono text-purple-200">
+                {sender.substring(0, 10)}...{sender.substring(sender.length - 8)}
+              </code>
+            </div>
+          </div>
+        </div>
+      );
+    }
+
+    return null;
+  }, [cacheKey, contentType, id, isSent, sender]);
+  const summarySection = (
+    <div className="mb-4 rounded-lg border border-slate-800/40 bg-slate-900/40 p-4 space-y-3">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="text-sm font-semibold text-slate-300 flex items-center gap-2">
+          <span>📦</span>
+          <span>{messageSummaryTitle}</span>
+        </div>
+        <div className={`text-sm font-semibold ${paymentBadgeClass}`}>
+          {summaryPaymentBadgeValue}
+        </div>
+      </div>
+      <div className="text-xs text-slate-400">
+        {summaryPaymentDescription}
+      </div>
+      <div
+        className="pt-2 border-t border-slate-800/60 space-y-2"
+        style={localUnlocked && localIsRead ? { display: "none" } : undefined}
+      >
+        <div className="text-xs font-semibold text-slate-400 flex items-center gap-2">
+          <span>📎</span>
+          <span>Attachment Preview</span>
+        </div>
+
+        {isLoadingPreviewMeta || showLoadingPreview ? (
+          <p className="text-xs text-slate-500 animate-pulse">
+            {isLoadingPreviewMeta ? "Loading attachment info..." : "Preparing preview..."}
+          </p>
+        ) : previewMetadata ? (
+          <div className="space-y-3">
+            {previewMetadata.thumbnail && (
+              <div className="flex items-center gap-3 p-2 bg-purple-900/10 rounded border border-purple-500/20">
+                <img
+                  src={previewMetadata.thumbnail}
+                  alt="25×25 preview"
+                  className="w-12 h-12 rounded border-2 border-purple-500/40 object-cover"
+                  style={{ imageRendering: "pixelated" }}
+                  title="25×25 pixelated preview"
+                />
+                <div className="text-[10px] text-purple-300/70 space-y-0.5">
+                  <div>25×25 preview</div>
+                  <div className={localUnlocked ? "text-green-400" : "text-amber-300"}>
+                    {localUnlocked ? "🔓 Unlock ready" : "🔒 Message locked"}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {previewMetadata.previewText && localUnlocked && canShowUnlockedPreview && (
+              <div className="p-2 bg-slate-900/40 border border-slate-700/40 rounded text-xs text-slate-200">
+                <div className="font-semibold text-slate-300 mb-1 flex items-center gap-1">
+                  <span>📝</span>
+                  <span>Message snippet</span>
+                </div>
+                <p className="leading-relaxed text-slate-200/90 break-words">
+                  {previewMetadata.previewText}
+                </p>
+              </div>
+            )}
+
+            {!localUnlocked && (
+              <div className="p-2 bg-slate-900/20 border border-slate-700/40 rounded text-[11px] text-slate-300 flex items-start gap-2">
+                <span>🔒</span>
+                <span>{isSent ? "Receiver must complete the unlock conditions to reveal text." : "Message content remains encrypted. Complete the unlock conditions to reveal text."}</span>
+              </div>
+            )}
+            {localUnlocked && !canShowUnlockedPreview && (
+              <div className="p-2 bg-slate-900/20 border border-slate-700/40 rounded text-[11px] text-slate-300 flex items-start gap-2">
+                <span>🗝️</span>
+                <span>{isSent ? "Receiver can decrypt the message once unlock conditions are satisfied." : "Unlock conditions are satisfied. Select “Open Message” to decrypt and view the content."}</span>
+              </div>
+            )}
+
+            <div className="space-y-2 text-xs text-slate-300">
+              {previewMetadata.fileName && (
+                <div className="flex items-start gap-2">
+                  <span className="text-slate-500 min-w-[70px]">📝 File:</span>
+                  <span className="break-all font-mono text-purple-200">{previewMetadata.fileName}</span>
+                </div>
+              )}
+              {previewMetadata.fileSize > 0n && (
+                <div className="flex items-start gap-2">
+                  <span className="text-slate-500 min-w-[70px]">💾 Size:</span>
+                  <span className="text-purple-200">{formatFileSize(previewMetadata.fileSize)}</span>
+                </div>
+              )}
+              {previewMetadata.dimensions && (
+                <div className="flex items-start gap-2">
+                  <span className="text-slate-500 min-w-[70px]">📐 Original:</span>
+                  <span className="text-purple-200">{previewMetadata.dimensions.width} × {previewMetadata.dimensions.height} pixels</span>
+                </div>
+              )}
+              {previewMetadata.contentType && (
+                <div className="flex items-start gap-2">
+                  <span className="text-slate-500 min-w-[70px]">🔖 Type:</span>
+                  <span className="text-purple-200">{previewMetadata.contentType}</span>
+                </div>
+              )}
+            </div>
+
+            <div className="p-2 bg-blue-900/20 border border-blue-500/30 rounded text-[11px] text-blue-200 flex items-start gap-2">
+              <span className="text-blue-400">ℹ️</span>
+              <span>
+                {localUnlocked
+                  ? (isSent
+                      ? "Receiver will see the high-resolution preview after opening the message."
+                      : "High-resolution preview is available below once the message is opened.")
+                  : (isSent
+                      ? "Receiver will unlock the full resolution after the time or payment conditions are met."
+                      : "Full resolution image will unlock after time/payment conditions are met.")}
+              </span>
+            </div>
+          </div>
+        ) : hasAnyPreviewInfo ? (
+          <div className="space-y-2 text-sm text-slate-300">
+            {fileNameLabel && (
+              <div className="flex items-start gap-2">
+                <span className="text-slate-500 min-w-[70px]">File name:</span>
+                <span className="break-all">{fileNameLabel}</span>
+              </div>
+            )}
+            {fileSizeLabel && (
+              <div className="flex items-start gap-2">
+                <span className="text-slate-500 min-w-[70px]">Size:</span>
+                <span>{fileSizeLabel}</span>
+              </div>
+            )}
+            {contentTypeLabel && (
+              <div className="flex items-start gap-2">
+                <span className="text-slate-500 min-w-[70px]">Type:</span>
+                <span className="break-all">{contentTypeLabel}</span>
+              </div>
+            )}
+            {(previewImageUrl || previewDataUrl) && (
+              <div className="pt-2 border-t border-slate-800/60">
+                <p className="text-xs text-slate-500 mb-2 flex items-center gap-1">
+                  <span>🖼️</span>
+                  <span>Preview</span>
+                </p>
+                <img
+                  src={previewImageUrl ?? previewDataUrl ?? ""}
+                  alt="Attachment preview"
+                  className="max-w-full h-auto rounded-md border border-slate-700/60"
+                  loading="lazy"
+                />
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {legacyAttachmentSummary ?? (
+              <div className="text-xs text-slate-400 space-y-1">
+                <p className="flex items-center gap-2">
+                  <span>📭</span>
+                  <span>No attachment detected</span>
+                </p>
+                <p className="text-[11px] text-slate-500">This message contains only text content.</p>
+              </div>
+            )}
+          </div>
+        )}
+        {!showLoadingPreview && !previewMetadata && !previewDataUrl && previewError && (
+          <p className="text-[11px] text-slate-500 italic">{previewError}</p>
+        )}
+      </div>
+    </div>
+  );
+
+  // ✅ getMessage transaction - payment desteği ile (usePrepareContractWrite)
   const { config: preparedReadConfig, error: prepareReadError, status: prepareReadStatus } = usePrepareContractWrite({
     address: contractAddress,
-    abi: chronoMessageZamaAbi,
-    functionName: "readMessage",
+    abi: sealedMessageAbi,
+    functionName: "getMessage" as any, // TODO: view function, write olmamalı
     args: [id],
-    // Payment koşulu varsa value ekle
-    value: shouldAttachPayment ? (requiredPaymentAmount as bigint) : undefined,
-    // Zaman kilidi açılmışsa veya ödeme gereği varsa (ve miktar biliniyorsa) hazırlansın
+    // Sealedn kilidi açılmışsa veya ödeme gereği varsa (ve miktar biliniyorsa) hazırlansın
     enabled: canPrepareRead,
     chainId: chain?.id,
     account: userAddress as `0x${string}` | undefined,
   });
   
-  // 🐛 DEBUG: Config'i logla
-  useEffect(() => {
-    console.log("📋 readMessage prepare state:", {
-      messageId: id.toString(),
-      metadataLoaded,
-  onchainUnlocked,
-      conditionMaskHex: conditionMask.toString(16).padStart(2, '0'),
-      hasTimeCondition,
-      hasPaymentCondition,
-      paymentReady,
-      timeReady,
-      requiredPaymentAmount: requiredPaymentAmount != null ? requiredPaymentAmount.toString() : null,
-      willSendValue: shouldAttachPayment && requiredPaymentAmount != null ? requiredPaymentAmount.toString() : 'NO VALUE',
-      enabled: canPrepareRead,
-      chainId: chain?.id,
-      account: userAddress,
-      requestPresent: !!(preparedReadConfig as any)?.request,
-      prepareStatus: prepareReadStatus,
-      prepareError: prepareReadError ? toReadableError(prepareReadError) : null
-    });
-  }, [id, metadataLoaded, onchainUnlocked, conditionMask, hasTimeCondition, hasPaymentCondition, paymentReady, timeReady, requiredPaymentAmount, shouldAttachPayment, canPrepareRead, preparedReadConfig, prepareReadStatus, prepareReadError, chain?.id, userAddress]);
-
   useEffect(() => {
     if (prepareReadError) {
       console.error("❌ readMessage prepare error:", prepareReadError);
@@ -1280,12 +2366,13 @@ export function MessageCard({
   });
   // Transaction başarılı olunca içeriği çek
   useEffect(() => {
-    if (!isSuccess || !client || !userAddress || !contractAddress || !fhe) return;
+    if (!isSuccess || !client || !userAddress || !contractAddress) return;
     const fetchContent = async () => {
       setIsLoadingContent(true);
       setDecryptError(null);
       // Kısa bekleme (ACL ve state)
-      await new Promise((resolve) => setTimeout(resolve, 2000));
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+  await ensureOnchainUnlocked();
 
   let handleValue: unknown = prefetchedHandle;
       try {
@@ -1293,18 +2380,14 @@ export function MessageCard({
         // Eğer ödeme gereksinimi varsa ve prefetched yoksa, yine de bir kez dene:
         // Ödeme "claimed" olduktan sonra sözleşme state’indeki engel kalkmış olabilir.
         if (handleValue == null) {
-          console.log('📡 No prefetched handle; attempting view read (time-lock path)...');
           const handle = await client.readContract({
             address: contractAddress,
-            abi: chronoMessageZamaAbi,
-            functionName: "readMessage" as any,
+            abi: sealedMessageAbi,
+            functionName: "getMessage" as any,
             args: [id],
             account: userAddress as `0x${string}`
           });
-          console.log('✅ Got handle via view:', handle);
           handleValue = handle;
-        } else {
-          console.log('✅ Using prefetched handle from simulate');
         }
 
         const decrypted = await decryptCiphertext(handleValue);
@@ -1330,26 +2413,29 @@ export function MessageCard({
       }
     };
     fetchContent();
-  }, [isSuccess, client, id, onMessageRead, userAddress, contractAddress, fhe, decryptCiphertext, prefetchedHandle, cacheKey]);
+  }, [isSuccess, client, id, onMessageRead, userAddress, contractAddress, decryptCiphertext, prefetchedHandle, cacheKey]);
 
   // Payment success olduğunda içeriği yükle
   useEffect(() => {
     const fetchContentAfterPayment = async () => {
-      if (!isPaymentSuccess || !client || !userAddress || !contractAddress || !fhe) return;
+  if (!isPaymentSuccess || !client || !userAddress || !contractAddress) return;
       
       setIsLoadingContent(true);
       setDecryptError(null);
       setLocalUnlocked(true);
       setLocalIsRead(true);
       
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      
-      let ciphertext: unknown = null;
+  await new Promise((resolve) => setTimeout(resolve, 2000));
+
+  // Re-sync payment metadata so outstandingPayment reflects the on-chain state
+  await ensureOnchainUnlocked();
+
+  let ciphertext: unknown = null;
       try {
         const content = await client.readContract({
           address: contractAddress,
-          abi: chronoMessageZamaAbi,
-          functionName: "readMessage" as any,
+          abi: sealedMessageAbi,
+          functionName: "getMessage" as any,
           args: [id],
           account: userAddress as `0x${string}`
         });
@@ -1377,7 +2463,7 @@ export function MessageCard({
     };
 
     fetchContentAfterPayment();
-  }, [isPaymentSuccess, client, id, onMessageRead, userAddress, contractAddress, fhe, decryptCiphertext]);
+  }, [isPaymentSuccess, client, id, onMessageRead, userAddress, contractAddress, decryptCiphertext, ensureOnchainUnlocked]);
 
   const handleReadClick = async () => {
     if (isSent) {
@@ -1388,15 +2474,14 @@ export function MessageCard({
       console.error("❌ Contract address not available");
       return;
     }
-    if (!isFheReady) {
-      setDecryptError("FHE system is still loading. Please wait a moment and try again.");
-      console.warn("⏳ FHE SDK not ready yet, isLoading:", isFheLoading);
+    if (!encryptionReady) {
+      setDecryptError("Encryption system is still loading. Please wait a moment and try again.");
+      console.warn("⏳ Encryption layer not ready yet, isLoading:", encryptionLoading);
       return;
     }
 
     // ✅ Metadata yüklenmediyse, hemen yükle ve bekle
     if (!metadataReadyRef.current) {
-      console.log("⏳ Metadata not loaded yet, loading now...");
       setDecryptError("Message info is loading...");
       const unlocked = await ensureOnchainUnlocked();
       if (!metadataReadyRef.current) {
@@ -1412,6 +2497,11 @@ export function MessageCard({
     if (!paymentReady) {
       setDecryptError("Payment info is still loading. Please try again in a moment.");
       console.warn("⏳ Payment metadata still loading for message", id.toString());
+      return;
+    }
+
+    if (shouldAttachPayment) {
+      setDecryptError(`Payment of ${formatPaymentAmount(outstandingPayment, { includeUnit: true, zeroLabel: "0 ETH" })} is required before decrypting. Please complete the payment first.`);
       return;
     }
 
@@ -1454,15 +2544,10 @@ export function MessageCard({
     }
 
     // Ödeme gerekiyorsa prepared value kontrolü
-  const needsPayment = hasPaymentCondition;
+  const needsPayment = shouldAttachPayment;
     const preparedValue = preparedRequest?.value as bigint | undefined;
-    console.log("🧪 preflight payment check", {
-      needsPayment,
-      requiredPaymentAmount: requiredPaymentAmount?.toString(),
-      preparedValue: preparedValue?.toString()
-    });
     if (needsPayment) {
-      const paymentQuote = requiredPaymentAmount as bigint;
+  const paymentQuote = outstandingPayment;
       if (!preparedValue || preparedValue < paymentQuote) {
         setDecryptError("Payment value not attached yet. Please wait a second and retry.");
         console.error("❌ Prepared request has no/insufficient value", { preparedValue: preparedValue?.toString(), required: paymentQuote.toString() });
@@ -1472,16 +2557,14 @@ export function MessageCard({
       // ÖNCE simulate ile handle'ı al (state değişmeden, payment koşulu ile)
       try {
         if (!client || !userAddress || !contractAddress) throw new Error('Missing client/account/address');
-        console.log('🔬 Simulating readMessage to capture handle before payment...');
         const sim = await client.simulateContract({
           address: contractAddress,
-          abi: chronoMessageZamaAbi as any,
-          functionName: 'readMessage',
+          abi: sealedMessageAbi as any,
+          functionName: 'getMessage',
           args: [id],
           account: userAddress as `0x${string}`,
           value: paymentQuote
         });
-        console.log('✅ Simulate result (handle captured)');
         setPrefetchedHandle(sim.result as unknown);
       } catch (e) {
         const msg = toReadableError(e);
@@ -1497,16 +2580,14 @@ export function MessageCard({
         // One quick retry in case prepare state just updated
         await new Promise((r) => setTimeout(r, 1200));
         try {
-          console.log('🔁 Retrying simulation...');
           const sim2 = await client.simulateContract({
             address: contractAddress,
-            abi: chronoMessageZamaAbi as any,
-            functionName: 'readMessage',
+            abi: sealedMessageAbi as any,
+            functionName: 'getMessage',
             args: [id],
             account: userAddress as `0x${string}`,
             value: paymentQuote
           });
-          console.log('✅ Simulate retry success (handle captured)');
           setPrefetchedHandle(sim2.result as unknown);
         } catch (e2) {
           console.error('❌ simulateContract retry failed, aborting:', e2);
@@ -1519,13 +2600,6 @@ export function MessageCard({
     }
 
     setDecryptError(null);
-    console.log("✅ Reading message...");
-    console.log("💰 Payment info:", {
-      hasPaymentCondition: needsPayment,
-      requiredPayment: requiredPaymentAmount?.toString(),
-      preparedValue: preparedValue?.toString(),
-      preparedConfig: preparedReadConfig
-    });
     readMessage();
   };
 
@@ -1649,11 +2723,33 @@ export function MessageCard({
               <span>🔒</span> Only receiver can view
             </p>
 
-            {sentPreviewInfo?.payload && (
+            {/* Decrypt edilen gerçek mesaj içeriği - gönderen de görebilir */}
+            {isLoadingContent ? (
+              <div className="mt-3 rounded-lg border border-blue-400/40 bg-blue-900/20 p-3">
+                <div className="text-slate-400 italic flex items-center gap-2">
+                  <span className="animate-spin">⟳</span> Loading your sent message...
+                </div>
+              </div>
+            ) : messageContent ? (
               <div className="mt-3 rounded-lg border border-blue-400/40 bg-blue-900/20 p-3 space-y-2">
                 <div className="text-xs font-semibold text-blue-200 flex items-center gap-2">
                   <span>✉️</span>
-                  <span>Message preview</span>
+                  <span>Your decrypted message</span>
+                </div>
+                <p className="text-sm text-blue-100 whitespace-pre-wrap break-words">
+                  {messageContent}
+                </p>
+                {decryptError && (
+                  <div className="mt-2 p-2 bg-red-900/20 border border-red-500/30 rounded text-xs text-red-300">
+                    <span>⚠️</span> {decryptError}
+                  </div>
+                )}
+              </div>
+            ) : sentPreviewInfo?.payload && (
+              <div className="mt-3 rounded-lg border border-blue-400/40 bg-blue-900/20 p-3 space-y-2">
+                <div className="text-xs font-semibold text-blue-200 flex items-center gap-2">
+                  <span>✉️</span>
+                  <span>Message preview (cached)</span>
                 </div>
                 <p className="text-sm text-blue-100 whitespace-pre-wrap break-words">
                   {sentPreviewInfo.original && sentPreviewInfo.original.trim().length > 0
@@ -1673,11 +2769,29 @@ export function MessageCard({
             )}
 
             {sentPreviewInfo?.fileMetadata && (
-              <div className="mt-3 rounded-lg border border-purple-500/40 bg-purple-900/20 p-3 space-y-2">
+              <div className="mt-3 rounded-lg border border-purple-500/40 bg-purple-900/20 p-3 space-y-3">
                 <div className="text-xs font-semibold text-purple-200 flex items-center gap-2">
                   <span>📎</span>
                   <span>Attached file summary</span>
                 </div>
+                
+                {/* Thumbnail preview if available */}
+                {sentPreviewInfo.fileMetadata.thumbnail && (
+                  <div className="flex items-center gap-3">
+                    <img
+                      src={sentPreviewInfo.fileMetadata.thumbnail}
+                      alt="25×25 thumbnail"
+                      className="w-16 h-16 rounded border-2 border-purple-500/60 object-cover"
+                      style={{ imageRendering: 'pixelated' }}
+                      title="25×25 thumbnail preview"
+                    />
+                    <p className="text-[10px] text-purple-300/70">
+                      25×25 pixelated preview<br/>
+                      (visible to receiver before unlock)
+                    </p>
+                  </div>
+                )}
+                
                 <div className="text-xs text-purple-200 space-y-1">
                   {sentPreviewInfo.fileMetadata.fileName && (
                     <div className="flex items-start gap-2">
@@ -1691,6 +2805,12 @@ export function MessageCard({
                       <span>
                         {(sentPreviewInfo.fileMetadata.fileSize / 1024 / 1024).toFixed(2)} MB
                       </span>
+                    </div>
+                  )}
+                  {sentPreviewInfo.fileMetadata.dimensions && (
+                    <div className="flex items-start gap-2">
+                      <span className="text-purple-400/70 min-w-[70px]">Dimensions:</span>
+                      <span>{sentPreviewInfo.fileMetadata.dimensions.width} × {sentPreviewInfo.fileMetadata.dimensions.height}</span>
                     </div>
                   )}
                   {sentPreviewInfo.fileMetadata.mimeType && (
@@ -1757,7 +2877,7 @@ export function MessageCard({
               <div className="flex items-start gap-2 text-xs">
                 <span className="text-slate-500 shrink-0">📝 Sent TX:</span>
                 <a 
-                  href={`${chain?.blockExplorers?.default?.url || 'https://sepolia.etherscan.io'}/tx/${transactionHash}`}
+                  href={(explorerBaseUrl || "https://etherscan.io") + `/tx/${transactionHash}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="font-mono text-blue-400 hover:text-blue-300 underline break-all"
@@ -1775,7 +2895,7 @@ export function MessageCard({
               <div className="flex items-start gap-2 text-xs">
                 <span className="text-slate-500 shrink-0">💰 Payment TX:</span>
                 <a 
-                  href={`${chain?.blockExplorers?.default?.url || 'https://sepolia.etherscan.io'}/tx/${paymentTxHash}`}
+                  href={(explorerBaseUrl || "https://etherscan.io") + `/tx/${paymentTxHash}`}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="font-mono text-green-400 hover:text-green-300 underline break-all"
@@ -1798,116 +2918,82 @@ export function MessageCard({
           : 'border-slate-800/30 bg-slate-950/60'
         }
       `}>
-        {!isSent && (
-          <div className="mb-4 rounded-lg border border-slate-800/40 bg-slate-900/40 p-4 space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-2">
-              <div className="text-sm font-semibold text-slate-300 flex items-center gap-2">
-                <span>📦</span>
-                <span>Message Summary</span>
-              </div>
-              <div className={`text-sm font-semibold ${paymentBadgeClass}`}>
-                {paymentDisplay ?? "Loading payment info..."}
-              </div>
-            </div>
-            <div className="text-xs text-slate-400">
-              {metadataLoaded
-                ? paymentIsFree
-                  ? "No payment is required to read this message."
-                  : `You must pay ${paymentDisplay} to open this message.`
-                : "Loading payment info..."}
-            </div>
-            <div className="pt-2 border-t border-slate-800/60 space-y-2">
-              <div className="text-xs font-semibold text-slate-400 flex items-center gap-2">
-                <span>📎</span>
-                <span>Attachment Details</span>
-              </div>
-              {isLoadingPreviewMeta ? (
-                <p className="text-xs text-slate-500 animate-pulse">Loading attachment preview...</p>
-              ) : hasAnyPreviewInfo ? (
-                <div className="space-y-2 text-sm text-slate-300">
-                  {fileNameLabel && (
-                    <div className="flex items-start gap-2">
-                      <span className="text-slate-500 min-w-[70px]">File name:</span>
-                      <span className="break-all">{fileNameLabel}</span>
-                    </div>
-                  )}
-                  {fileSizeLabel && (
-                    <div className="flex items-start gap-2">
-                      <span className="text-slate-500 min-w-[70px]">Size:</span>
-                      <span>{fileSizeLabel}</span>
-                    </div>
-                  )}
-                  {contentTypeLabel && (
-                    <div className="flex items-start gap-2">
-                      <span className="text-slate-500 min-w-[70px]">Type:</span>
-                      <span className="break-all">{contentTypeLabel}</span>
-                    </div>
-                  )}
-                  {previewImageUrl && (
-                    <div className="pt-2 border-t border-slate-800/60">
-                      <p className="text-xs text-slate-500 mb-2 flex items-center gap-1">
-                        <span>🖼️</span>
-                        <span>Preview</span>
-                      </p>
-                      <img
-                        src={previewImageUrl}
-                        alt="Attachment preview"
-                        className="max-w-full h-auto rounded-md border border-slate-700/60"
-                        loading="lazy"
-                      />
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <p className="text-xs text-slate-500 italic">No attachment metadata available.</p>
-              )}
-            </div>
-          </div>
-        )}
+        {summarySection}
         
         {/* 🔐 Unlock Button - Kilitli mesajlar için */}
         {!isSent && !localUnlocked && (
-          <div className="mb-4">
-            <button
-              onClick={() => {
-                if (readMessage && timeReady && paymentReady) {
-                  readMessage();
-                } else {
-                  handleReadClick();
-                }
-              }}
-              disabled={isReading || isConfirming || !isFheReady}
-              className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 
-                text-white font-semibold transition-all transform hover:scale-[1.02]
-                disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100
-                flex items-center justify-center gap-2 shadow-lg"
-            >
-              {isReading || isConfirming ? (
-                <>
-                  <span className="animate-spin">⟳</span>
-                  {isReading ? "Preparing..." : "Awaiting confirmation..."}
-                </>
-              ) : !metadataLoaded ? (
-                <>
-                  <span className="animate-pulse">⏳</span>
-                  Loading metadata...
-                </>
-              ) : !timeReady ? (
-                <>
-                  <span>⏳</span>
-                  Time lock still active
-                </>
-              ) : (
-                <>
-                  <span>🔓</span>
-                  {paymentRequirementLabel
-                    ? `Open Message (${paymentRequirementLabel})`
-                    : "Open Message"}
-                </>
-              )}
-            </button>
-            {decryptError && (
-              <p className="text-xs text-red-400 mt-2">{decryptError}</p>
+          <div className="mb-4 space-y-2">
+            {shouldAttachPayment ? (
+              <>
+                <button
+                  onClick={handlePaymentClick}
+                  disabled={isPaymentActionPending || !canSubmitPayment}
+                  className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 
+                    text-white font-semibold transition-all flex items-center justify-center gap-2 shadow-lg
+                    disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {isPaymentActionPending ? (
+                    <>
+                      <span className="animate-spin">⟳</span>
+                      {isPaymentPending || isManualPaymentPending ? "Waiting for wallet..." : "Processing payment..."}
+                    </>
+                  ) : (
+                    <>
+                      <span>💰</span>
+                      Pay {formatPaymentAmount(outstandingPayment, { zeroLabel: "0 ETH" })} to Unlock
+                    </>
+                  )}
+                </button>
+                {(!canSubmitPayment && !isPaymentActionPending) && (
+                  <p className="mt-2 text-xs text-amber-200">
+                    Connect your wallet on the correct network to complete the payment.
+                  </p>
+                )}
+              </>
+            ) : (
+              <button
+                onClick={() => {
+                  if (readMessage && timeReady && paymentReady) {
+                    readMessage();
+                  } else {
+                    handleReadClick();
+                  }
+                }}
+                disabled={isReading || isConfirming || !encryptionReady}
+                className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 
+                  text-white font-semibold transition-all transform hover:scale-[1.02]
+                  disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100
+                  flex items-center justify-center gap-2 shadow-lg"
+              >
+                {isReading || isConfirming ? (
+                  <>
+                    <span className="animate-spin">⟳</span>
+                    {isReading ? "Preparing..." : "Awaiting confirmation..."}
+                  </>
+                ) : !metadataLoaded ? (
+                  <>
+                    <span className="animate-pulse">⏳</span>
+                    Loading metadata...
+                  </>
+                ) : !timeReady ? (
+                  <>
+                    <span>⏳</span>
+                    Time lock still active
+                  </>
+                ) : (
+                  <>
+                    <span>🔓</span>
+                    {paymentRequirementLabel
+                      ? `Open Message (${paymentRequirementLabel})`
+                      : "Open Message"}
+                  </>
+                )}
+              </button>
+            )}
+            {(decryptError || preparePaymentError) && (
+              <p className="text-xs text-red-400">
+                {decryptError ?? `Payment could not be prepared: ${toReadableError(preparePaymentError)}`}
+              </p>
             )}
           </div>
         )}
@@ -1960,7 +3046,7 @@ export function MessageCard({
                 
                 <button
                   onClick={handleReadClick}
-                  disabled={isReading || isConfirming || isLoadingContent || !isFheReady}
+                  disabled={isReading || isConfirming || isLoadingContent || !encryptionReady}
                   className="w-full text-left px-3 py-2 rounded-lg bg-green-600/20 hover:bg-green-600/30 
                     border border-green-500/30 text-green-300 transition-colors
                     disabled:opacity-50 disabled:cursor-not-allowed"
@@ -1970,10 +3056,10 @@ export function MessageCard({
                       <span className="animate-spin">⟳</span> 
                       {isLoadingContent ? "Loading content..." : "Reading..."}
                     </span>
-                  ) : !isFheReady ? (
+                  ) : !encryptionReady ? (
                     <span className="flex items-center gap-2">
                       <span className="animate-pulse">⏳</span> 
-                      FHE system loading...
+                      Encryption system loading...
                     </span>
                   ) : (
                     <span className="flex flex-col sm:flex-row sm:items-center sm:gap-2 text-left">
@@ -2093,22 +3179,6 @@ export function MessageCard({
                       </div>
                     ) : (
                       <div className="space-y-3">
-                        {/* Güvenlik Uyarısı */}
-                        <div className="rounded-lg bg-red-900/20 border border-red-400/40 p-3">
-                          <p className="text-xs text-red-300 font-semibold flex items-center gap-2 mb-2">
-                            <span>🛡️</span> Security Warning
-                          </p>
-                          <ul className="text-xs text-red-200 space-y-1">
-                            <li>⚠️ <strong>Verify the sender address:</strong></li>
-                            <li className="font-mono text-xs bg-red-950/40 px-2 py-1 rounded ml-4 break-all">
-                              {sender}
-                            </li>
-                            <li>🦠 Scan the file for malware before downloading.</li>
-                            <li>❌ Do not open files from unknown or untrusted sources.</li>
-                          </ul>
-                        </div>
-                        
-                        {/* Mesaj varsa göster */}
                         {fileMetadataState.message && (
                           <div className="rounded-lg bg-slate-800/50 border border-slate-600/30 p-3">
                             <p className="text-sm text-slate-300 whitespace-pre-wrap">{fileMetadataState.message}</p>
@@ -2141,24 +3211,54 @@ export function MessageCard({
                           </div>
                           
                           {/* Resim önizlemesi */}
-                          {fileMetadataState.mimeType?.startsWith('image/') && fileMetadataState.ipfs && (
-                            <div className="pt-3 border-t border-purple-400/30">
-                              <p className="text-xs text-purple-400 mb-2">Preview:</p>
-                              <img 
-                                src={`/api/ipfs/${fileMetadataState.ipfs}`}
-                                alt={fileMetadataState.name ?? 'Attachment preview'}
-                                className="max-w-full h-auto rounded border border-purple-400/30 max-h-64 object-contain"
-                                loading="lazy"
-                              />
+                          {isImageAttachment ? (
+                            resolvedImageSrc ? (
+                              <div className="pt-3 border-t border-purple-400/30">
+                                <p className="text-xs text-purple-400 mb-2">Preview:</p>
+                                <img
+                                  src={resolvedImageSrc}
+                                  alt={fileMetadataState.name ?? 'Attachment preview'}
+                                  className="max-w-full h-auto rounded border border-purple-400/30 max-h-64 object-contain"
+                                  loading="lazy"
+                                  onError={(e) => {
+                                    if (!useGatewayFallback && normalizedPreviewImageHash && !normalizedPreviewImageHash.startsWith('data:')) {
+                                      console.warn('❌ Proxy preview failed, retrying via public IPFS gateway');
+                                      setUseGatewayFallback(true);
+                                      return;
+                                    }
+
+                                    if (!useThumbnailFallback && resolvedThumbnailSrc) {
+                                      console.warn('❌ Attachment preview failed on gateway, falling back to thumbnail');
+                                      setUseThumbnailFallback(true);
+                                      return;
+                                    }
+
+                                    console.error('❌ Image preview failed after all fallbacks', e);
+                                  }}
+                                />
+                                {useThumbnailFallback && resolvedPrimaryImageSrc && resolvedThumbnailSrc && (
+                                  <p className="text-[11px] text-purple-300/70 mt-2">
+                                    ⚠️ High-resolution preview unavailable. Showing thumbnail copy instead.
+                                  </p>
+                                )}
+                              </div>
+                            ) : (
+                              <div className="pt-3 border-t border-purple-400/30 text-xs text-purple-400">
+                                ⚠️ Image preview is not ready yet.
+                              </div>
+                            )
+                          ) : (
+                            <div className="pt-3 border-t border-purple-400/30 text-xs text-purple-400">
+                              {!downloadSourceHash ? '⚠️ IPFS hash not available' : '⚠️ Not an image type'}
                             </div>
                           )}
                           
                           {/* İndirme Butonu */}
                           <div className="pt-3 border-t border-purple-400/30">
-                            {fileMetadataState.ipfs ? (
+                            {resolvedDownloadUrl ? (
                               <>
                                 <a
-                                  href={`/api/ipfs/${fileMetadataState.ipfs}`}
+                                  href={resolvedDownloadUrl}
                                   download={fileMetadataState.name}
                                   target="_blank"
                                   rel="noopener noreferrer"
@@ -2167,9 +3267,18 @@ export function MessageCard({
                                 >
                                   📥 Download File
                                 </a>
-                                <p className="text-xs text-purple-300/60 mt-2 text-center">
-                                  ⚠️ Scan for malware before opening the download.
-                                </p>
+<div className="rounded-lg bg-red-900/20 border border-red-400/40 p-3">
+                          <p className="text-xs text-red-300 font-semibold flex items-center gap-2 mb-2">
+                            <span>🛡️</span> Security Warning
+                          </p>
+                          <ul className="text-xs text-red-200 space-y-1">
+                            <li>⚠️ <strong>Verify the sender address:</strong></li>
+                            <li className="font-mono text-xs bg-red-950/40 px-2 py-1 rounded ml-4 break-all">
+                              {sender}
+                            </li>
+                            <li>🦠 Scan the file for malware before downloading.</li>
+                          </ul>
+                        </div>
                               </>
                             ) : (
                               <p className="text-xs text-purple-300/70 text-center">
@@ -2199,165 +3308,7 @@ export function MessageCard({
               </div>
             )}
           </div>
-        ) : (
-          // Mesaj henüz unlock olmamış
-          <div className="space-y-3">
-            {!isSent && previewDataUrl && (
-              <div className="rounded-lg border border-purple-400/50 bg-purple-900/30 p-3 flex items-center gap-3">
-                <img
-                  src={previewDataUrl}
-                  alt="Attachment preview"
-                  className="h-16 w-16 rounded border border-purple-500/40 object-cover"
-                />
-                <div className="text-xs text-purple-200 space-y-1">
-                  <p className="font-semibold flex items-center gap-1">
-                    <span>🖼️</span>
-                    <span>Low-res preview</span>
-                  </p>
-                  <p className="text-purple-200/70">
-                    Full image unlocks once the timer finishes.
-                  </p>
-                </div>
-              </div>
-            )}
-            {!isSent && !previewDataUrl && isLoadingPreview && (
-              <p className="text-xs text-slate-400 flex items-center gap-2">
-                <span className="animate-spin">⟳</span>
-                Preparing preview...
-              </p>
-            )}
-            {!isSent && previewError && !previewDataUrl && !isLoadingPreview && (
-              <p className="text-xs text-slate-500 italic">{previewError}</p>
-            )}
-            {/* File Preview - localStorage'dan veya contentType'dan kontrol */}
-            {(() => {
-              // Önce localStorage'a bak (gönderici için)
-              try {
-                const cached = localStorage.getItem(`${cacheKey}-content-${id}`);
-                if (cached && cached.startsWith('FILE:')) {
-                  return (
-                    <div className="rounded-lg bg-purple-900/20 border border-purple-400/40 p-3 space-y-2">
-                      <div className="flex items-center gap-2 text-sm text-purple-300">
-                        <span>📎</span>
-                        <span className="font-semibold">Attached File</span>
-                      </div>
-                      <p className="text-xs text-purple-200 italic">
-                        {isSent 
-                          ? "You attached a file to this message."
-                          : "⚠️ This message includes a file. Confirm the sender before unlocking."
-                        }
-                      </p>
-                      {!isSent && (
-                        <div className="text-xs text-slate-300 space-y-1">
-                          <div>
-                            <span className="text-slate-500">Sender:</span>{' '}
-                            <code className="font-mono text-purple-200">
-                              {sender.substring(0, 10)}...{sender.substring(sender.length - 8)}
-                            </code>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                }
-              } catch {}
-              
-              // contentType kontrolü (eski sistem)
-              if (contentType === 1) {
-                return (
-                  <div className="rounded-lg bg-purple-900/20 border border-purple-400/40 p-3 space-y-2">
-                    <div className="flex items-center gap-2 text-sm text-purple-300">
-                      <span>📎</span>
-                      <span className="font-semibold">File Attached</span>
-                    </div>
-                    <p className="text-xs text-purple-200 italic">
-                      ⚠️ This message contains a file. Verify the sender before unlocking and opening.
-                    </p>
-                    <div className="text-xs text-slate-300 space-y-1">
-                      <div>
-                        <span className="text-slate-500">Sender:</span>{' '}
-                        <code className="font-mono text-purple-200">
-                          {sender.substring(0, 10)}...{sender.substring(sender.length - 8)}
-                        </code>
-                      </div>
-                    </div>
-                  </div>
-                );
-              }
-              
-              return null;
-            })()}
-            
-            {canUnlockWithPayment ? (
-              // Payment-locked mesaj için unlock butonu (Zama'da yok)
-              <button
-                onClick={() => unlockWithPayment?.()}
-                disabled={isPaymentPending || isPaymentConfirming || !unlockWithPayment}
-                className="w-full text-left px-4 py-3 rounded-lg bg-cyan-600/20 hover:bg-cyan-600/30 
-                  border-2 border-cyan-400/50 text-cyan-300 transition-colors
-                  disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
-              >
-                {isPaymentPending || isPaymentConfirming ? (
-                  <span className="flex items-center gap-2">
-                    <span className="animate-spin">⟳</span> 
-                    {isPaymentPending ? "Confirming payment..." : "Processing..."}
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-2">
-                    💰 Pay {formatPaymentAmount(requiredPayment, { zeroLabel: "0 ETH" })} to Unlock
-                  </span>
-                )}
-              </button>
-            ) : (
-              // Time-locked mesaj
-              <div className="space-y-3">
-                <p className="text-slate-400 italic flex items-center gap-2">
-                  <span>⏳</span> Message is still locked
-                </p>
-                
-                {/* �📋 Preview Metadata (if available) */}
-                {isLoadingPreviewMeta && (
-                  <div className="text-slate-500 text-sm animate-pulse">Loading preview...</div>
-                )}
-                {previewMetadata && (previewMetadata.fileName || previewMetadata.fileSize > 0n) && (
-                  <div className="hidden bg-slate-800 border border-slate-700 rounded-lg p-3 space-y-2">
-                    <div className="text-slate-300 text-sm font-semibold flex items-center gap-2">
-                      📋 Preview Information
-                    </div>
-                    {previewMetadata.fileName && (
-                      <div className="text-slate-400 text-sm flex items-start gap-2">
-                        <span className="text-slate-500">📄 File:</span>
-                        <span className="break-all">{previewMetadata.fileName}</span>
-                      </div>
-                    )}
-                    {previewMetadata.fileSize > 0n && (
-                      <div className="text-slate-400 text-sm flex items-center gap-2">
-                        <span className="text-slate-500">📊 Size:</span>
-                        <span>{(Number(previewMetadata.fileSize) / 1024).toFixed(2)} KB</span>
-                      </div>
-                    )}
-                    {previewMetadata.contentType && (
-                      <div className="text-slate-400 text-sm flex items-start gap-2">
-                        <span className="text-slate-500">🔖 Type:</span>
-                        <span className="break-all">{previewMetadata.contentType}</span>
-                      </div>
-                    )}
-                    {previewMetadata.previewImageHash && (
-                      <div className="mt-2">
-                        <img 
-                          src={`/api/ipfs/${previewMetadata.previewImageHash}`} 
-                          alt="Preview" 
-                          className="rounded border border-slate-600 max-w-full h-auto"
-                          loading="lazy"
-                        />
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
+        ) : null}
       </div>
     </div>
   );

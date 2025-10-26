@@ -24,11 +24,6 @@ export function NetworkSwitcher() {
     setMounted(true);
   }, []);
 
-  // Debug: isOpen state değişimini logla
-  useEffect(() => {
-    console.log('🟡 NetworkSwitcher isOpen changed:', isOpen);
-  }, [isOpen]);
-
   // Close dropdown when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -46,7 +41,6 @@ export function NetworkSwitcher() {
       {/* Compact Button */}
       <button
         onClick={() => {
-          console.log('🔵 NetworkSwitcher button clicked! isOpen:', !isOpen);
           setIsOpen(!isOpen);
         }}
         className="flex w-full items-center justify-between rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-3 shadow-lg transition hover:border-aurora hover:bg-slate-900/80"
@@ -76,7 +70,7 @@ export function NetworkSwitcher() {
 
       {/* Dropdown Panel - Only render after mount to prevent hydration mismatch */}
       {mounted && isOpen && (
-        <div 
+  <div 
           className="absolute left-0 right-0 z-[100] mt-2 max-h-[500px] overflow-y-auto rounded-xl border-2 border-aurora bg-slate-900 shadow-2xl"
           style={{ minHeight: '200px' }}
         >
@@ -97,7 +91,7 @@ export function NetworkSwitcher() {
           <div className="p-2">
             {displayChains.map(([key, chainConfig]) => {
               const isActive = chain?.id === chainConfig.id;
-              const hasContract = chainConfig.zamaContractAddress !== '0x0000000000000000000000000000000000000000';
+              const hasContract = chainConfig.contractAddress !== '0x0000000000000000000000000000000000000000';
               const isDeployed = hasContract; // Kontrat deploy edilmiş mi?
               const canSwitch = switchNetwork && isDeployed && !isActive;
 
@@ -105,17 +99,7 @@ export function NetworkSwitcher() {
                 <button
                   key={key}
                   onClick={() => {
-                    console.log('🖱️ Chain button clicked:', {
-                      key,
-                      chainId: chainConfig.id,
-                      chainName: chainConfig.name,
-                      isActive,
-                      isDeployed,
-                      switchNetworkType: typeof switchNetwork
-                    });
-                    
                     if (canSwitch) {
-                      console.log('📡 Calling switchNetwork with chainId:', chainConfig.id);
                       switchNetwork(chainConfig.id);
                       setIsOpen(false);
                     } else if (!isDeployed) {
@@ -207,7 +191,7 @@ export function NetworkSwitcher() {
           {!showAll && mainnets.length > 0 && (
             <div className="border-t border-slate-700 bg-blue-900/20 px-4 py-3">
               <p className="text-xs text-blue-200">
-                💡 <strong>{mainnets.length} mainnets</strong> available. Click the "All Networks" button.
+                💡 <strong>{mainnets.length} mainnets</strong> available. Click the &quot;All Networks&quot; button.
               </p>
             </div>
           )}

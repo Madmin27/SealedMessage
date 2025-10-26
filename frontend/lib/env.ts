@@ -1,24 +1,31 @@
-const ensure = (value: string | undefined, fallback: string) => value ?? fallback;
+import { getChainByKey, supportedChains, ZERO_ADDRESS } from "./chains";
 
-const parseNumber = (value: string | undefined, fallback: number) => {
-  const parsed = value ? Number(value) : NaN;
-  return Number.isFinite(parsed) ? parsed : fallback;
-};
+const ensure = (value: string | undefined): string | undefined => value?.trim() || undefined;
 
-const chainId = parseNumber(process.env.NEXT_PUBLIC_CHAIN_ID, 31337);
+const supportedKeys = Object.keys(supportedChains);
+const defaultChainKey = supportedKeys[0];
+
+const envChainKey = ensure(process.env.NEXT_PUBLIC_CHAIN_KEY) as keyof typeof supportedChains | undefined;
+const activeChainKey = envChainKey && supportedChains[envChainKey] ? envChainKey : defaultChainKey;
+
+const activeChain = activeChainKey ? getChainByKey(activeChainKey) : undefined;
+
+if (!activeChain) {
+  throw new Error("No supported chains configured. Please populate lib/chains.public.json.");
+}
+
+const contractOverride = ensure(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS);
+const explorerOverride = ensure(process.env.NEXT_PUBLIC_EXPLORER_URL);
+const rpcOverride = ensure(process.env.NEXT_PUBLIC_RPC_URL);
 
 export const appConfig = {
-  contractAddress: ensure(process.env.NEXT_PUBLIC_CONTRACT_ADDRESS, "0x0000000000000000000000000000000000000000"),
+  contractAddress: (contractOverride || activeChain.contractAddress || ZERO_ADDRESS) as `0x${string}`,
   chain: {
-    id: chainId,
-    name: ensure(process.env.NEXT_PUBLIC_CHAIN_NAME, chainId === 31337 ? "Hardhat" : "Custom FHEVM"),
-    network: ensure(process.env.NEXT_PUBLIC_CHAIN_KEY, "custom-fhevm"),
-    nativeCurrency: {
-      name: ensure(process.env.NEXT_PUBLIC_CHAIN_CURRENCY_NAME, "Ether"),
-      symbol: ensure(process.env.NEXT_PUBLIC_CHAIN_CURRENCY_SYMBOL, "ETH"),
-      decimals: parseNumber(process.env.NEXT_PUBLIC_CHAIN_DECIMALS, 18)
-    },
-    rpcUrl: ensure(process.env.NEXT_PUBLIC_RPC_URL, "http://127.0.0.1:8545"),
-    explorerUrl: process.env.NEXT_PUBLIC_EXPLORER_URL || undefined
+    id: activeChain.id,
+    name: activeChain.name,
+    network: activeChain.network,
+    nativeCurrency: activeChain.nativeCurrency,
+    rpcUrl: rpcOverride || activeChain.rpcUrls.default,
+    explorerUrl: explorerOverride || activeChain.blockExplorer
   }
 };

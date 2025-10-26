@@ -7,6 +7,7 @@ interface MappingRecord {
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
+  metadataKeccak?: string;
   updatedAt: string;
 }
 
@@ -44,6 +45,7 @@ async function writeStore(store: Record<string, MappingRecord>): Promise<void> {
 export async function upsertMapping(record: {
   shortHash: string;
   fullHash: string;
+  metadataKeccak?: string;
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
@@ -54,9 +56,12 @@ export async function upsertMapping(record: {
     throw new Error("shortHash and fullHash are required");
   }
 
+  const trimmedMetadataKeccak = record.metadataKeccak?.trim();
+
   const payload: MappingRecord = {
     shortHash: trimmedHash,
     fullHash: trimmedFull,
+    metadataKeccak: trimmedMetadataKeccak,
     fileName: record.fileName,
     fileSize: record.fileSize,
     mimeType: record.mimeType,
@@ -76,6 +81,17 @@ export async function getMapping(shortHash: string): Promise<MappingRecord | und
   }
   const store = await readStore();
   return store[trimmedHash];
+}
+
+export async function getMappingByMetadataKeccak(metadataKeccak: string): Promise<MappingRecord | undefined> {
+  const trimmed = metadataKeccak.trim().toLowerCase();
+  if (!trimmed || trimmed === "0x") {
+    return undefined;
+  }
+
+  const store = await readStore();
+  const records = Object.values(store);
+  return records.find((record) => record.metadataKeccak?.toLowerCase() === trimmed);
 }
 
 export async function getAllMappings(): Promise<MappingRecord[]> {

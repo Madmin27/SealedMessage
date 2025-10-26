@@ -6,7 +6,7 @@ async function main() {
   const [deployer] = await hre.ethers.getSigners();
   const balance = await hre.ethers.provider.getBalance(deployer.address);
 
-  console.log("\n=== ChronoMessage Deployment ===");
+  console.log("\n=== SealedMessage Deployment ===");
   console.log(`Network: ${hre.network.name}`);
   console.log(`Deployer: ${deployer.address}`);
   console.log(`Balance: ${hre.ethers.formatEther(balance)} ANKR\n`);
@@ -18,15 +18,15 @@ async function main() {
     process.exit(1);
   }
 
-  console.log("Deploying ChronoMessage contract...");
-  const ChronoMessage = await hre.ethers.getContractFactory("ChronoMessage");
-  const contract = await ChronoMessage.deploy();
+  console.log("Deploying SealedMessage contract...");
+  const SealedMessage = await hre.ethers.getContractFactory("SealedMessage");
+  const contract = await SealedMessage.deploy();
   
   console.log("Waiting for deployment confirmation...");
   await contract.waitForDeployment();
 
   const address = await contract.getAddress();
-  console.log(`\n✅ ChronoMessage deployed to: ${address}`);
+  console.log(`\n✅ SealedMessage deployed to: ${address}`);
 
   // Deployment metadata'yı kaydet
   const deploymentsDir = path.resolve(__dirname, "..", "deployments");

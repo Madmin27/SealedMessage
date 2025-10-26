@@ -49,11 +49,10 @@ export function IPFSUploader({ onUploadComplete, onError }: IPFSUploaderProps) {
         throw new Error(`Upload failed: ${response.statusText}`);
       }
 
-      const data = await response.json();
-      const ipfsHash = data.IpfsHash;
+  const data = await response.json();
+  const ipfsHash = data.IpfsHash;
 
-      console.log("Uploaded to IPFS:", ipfsHash);
-      onUploadComplete(ipfsHash);
+  onUploadComplete(ipfsHash);
 
       return ipfsHash;
     } catch (error) {

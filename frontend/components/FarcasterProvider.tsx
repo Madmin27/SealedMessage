@@ -9,11 +9,8 @@ export function FarcasterProvider({ children }: { children: React.ReactNode }) {
       // Check if we're in a Farcaster context
       const context = await sdk.context;
       if (context) {
-        console.log("✅ Farcaster context detected:", context);
-        
-        // Signal that the app is ready
+        // Signal that the app is ready once Farcaster context is confirmed.
         sdk.actions.ready();
-        console.log("✅ SDK ready() called");
       }
     };
 

@@ -7,7 +7,7 @@ import advancedFormat from "dayjs/plugin/advancedFormat";
 import duration from "dayjs/plugin/duration";
 import { usePublicClient, useAccount, useNetwork } from "wagmi";
 import type { PublicClient } from "viem";
-import { chronoMessageZamaAbi } from "../lib/abi-zama";
+import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { appConfig } from "../lib/env";
 import { useContractAddress, useHasContract } from "../lib/useContractAddress";
 import { MessageCard } from "./MessageCard";
@@ -64,60 +64,37 @@ async function fetchMessage(
   isV3?: boolean // V3 contract mu?
 ): Promise<MessageViewModel | null> {
   try {
-    const result = await client.readContract({
+    // getMessage() ile full message data al
+    const messageData = await client.readContract({
       address: contractAddress,
       abi: contractAbi,
-      functionName: "getMessageMetadata",
-      args: [id],
-      account: account // Kullanıcı adresini msg.sender olarak gönder
-    });
+      functionName: "getMessage",
+      args: [id]
+    }) as any;
 
-    let sender: string, receiver: string, unlockTime: bigint, isRead: boolean;
-    let requiredPayment: bigint | undefined;
-    let paidAmount: bigint | undefined;
-    let conditionType: number | undefined;
-    let timestamp: bigint | undefined;
-    let contentType: number | undefined;
+    // getMessageFinancialView() ile financial data al
+    const financialData = await client.readContract({
+      address: contractAddress,
+      abi: contractAbi,
+      functionName: "getMessageFinancialView",
+      args: [id]
+    }) as any;
 
-    if (isV3) {
-      // V3: Tuple (struct) olarak döner
-      const metadata = result as any;
-      sender = metadata.sender ?? metadata[0];
-      receiver = metadata.receiver ?? metadata[1];
-      unlockTime = metadata.unlockTime ?? metadata[2] ?? 0n; // 0n fallback
-      requiredPayment = metadata.requiredPayment ?? metadata[3];
-      paidAmount = metadata.paidAmount ?? metadata[4];
-      conditionType = metadata.conditionType !== undefined ? metadata.conditionType : metadata[5];
-      contentType = metadata.contentType !== undefined ? metadata.contentType : metadata[6]; // 6. index
-      isRead = metadata.isRead ?? metadata[7]; // 7. index
-      timestamp = metadata.timestamp ?? metadata[8]; // timestamp son alan (index 8)
-      console.log('📦 V3 metadata:', metadata);
-    } else {
-      // V2: Array olarak döner
-      contentType = undefined; // V2'de contentType yok
-      [sender, receiver, unlockTime, isRead] = result as [string, string, bigint, boolean];
-      timestamp = undefined; // V2'de timestamp yok
-      console.log('📦 V2 metadata:', [sender, receiver, unlockTime, isRead]);
-    }
+    // Parse message data (struct)
+    const sender = messageData.sender || messageData[0];
+    const receiver = messageData.receiver || messageData[1];
+    const createdAt = messageData.createdAt || messageData[8];
+    const revoked = messageData.revoked || messageData[9];
+
+    // Parse financial data (struct)
+    const unlockTime = financialData.unlockTime || 0n;
+    const requiredPayment = financialData.requiredPayment || 0n;
+    const paidAmount = financialData.paidAmount || 0n;
+    const conditionMask = financialData.conditionMask || 0;
+    const isUnlocked = financialData.isUnlocked || false;
 
     const now = BigInt(Math.floor(Date.now() / 1000));
-    
-    // Unlock kontrolü: V3'te condition type'a göre
-    let unlocked = false;
-    if (isV3 && conditionType !== undefined) {
-      // V3: conditionType var
-      if (conditionType === 0) {
-        // TIME_LOCK (0)
-        unlocked = now >= unlockTime;
-      } else if (conditionType === 1) {
-        // PAYMENT (1)
-        unlocked = (paidAmount ?? 0n) >= (requiredPayment ?? 0n);
-      }
-    } else {
-      // V2: sadece time-based
-      unlocked = now >= unlockTime;
-    }
-    
+    const unlocked = isUnlocked;
     const isSent = sender.toLowerCase() === userAddress.toLowerCase();
 
     let content: string | null = null;
@@ -125,43 +102,27 @@ async function fetchMessage(
       content = "[Click to read message]";
     }
 
-    // Payment mesajları için tarih formatlaması özel (unlockTime=0)
-    const isPaymentLocked = isV3 && conditionType === 1; // PAYMENT mode
-    const unlockDate = isPaymentLocked 
-      ? dayjs() // Payment mesajlar için şu anki zamanı göster (anlamsız zaten)
-      : dayjs(Number(unlockTime) * 1000);
-    
-    const relative = isPaymentLocked
-      ? (unlocked ? "Payment received" : "Waiting for payment")
-  : (unlocked ? "Opened" : unlockDate.fromNow());
-    
-    // Dosya metadata parse et (contentType=1 ise)
-    let fileMetadata: { name: string; size: number; type: string } | undefined;
-    if (contentType === 1 && !unlocked) {
-      // Metadata'yı almak için content çekmemiz gerekir
-      // Ama bu sadece unlocked durumda mümkün, bu yüzden daha önce kaydedilmiş metadata lazım
-      // ŞİMDİLİK: Mesaj açılmadan önce tam bilgiyi gösteremeyiz
-      // Alternatif: Smart contract'ta ayrı metadata mapping tutmak
-      fileMetadata = undefined; // TODO: Metadata storage eklenecek
-    }
-    
+    // Tarih formatlaması
+    const unlockDate = dayjs(Number(unlockTime) * 1000);
+    const relative = unlocked ? "Opened" : unlockDate.fromNow();
+
     return {
       id,
       sender,
       receiver,
       unlockTime,
-      unlockDate: isPaymentLocked ? "Payment-locked" : unlockDate.format("DD MMM YYYY HH:mm"),
+      unlockDate: unlockDate.format("DD MMM YYYY HH:mm"),
       relative,
       unlocked,
       content,
-      isRead,
+      isRead: false, // SealedMessage'da isRead yok
       isSent,
-      timestamp, // Mesajın gönderilme zamanı
+      timestamp: createdAt,
       requiredPayment,
       paidAmount,
-      conditionType,
-      contentType, // Dosya tipi
-      fileMetadata // Dosya bilgileri (şimdilik undefined)
+      conditionType: conditionMask,
+      contentType: undefined,
+      fileMetadata: undefined
     };
   } catch (err: any) {
     // Authorization hatası durumunda null dön (bu mesaj kullanıcıya ait değil)
@@ -187,6 +148,13 @@ async function fetchTransactionHashes(
   if (messageIds.length === 0) return txHashMap;
 
   try {
+    const messageStoredEvent = contractAbi.find((item: any) => item.type === "event" && item.name === "MessageStored");
+    const messagePaidEvent = contractAbi.find((item: any) => item.type === "event" && item.name === "MessagePaid");
+
+    if (!messageStoredEvent || !messagePaidEvent) {
+      throw new Error("Required contract events are missing from ABI");
+    }
+
     // Son bloğu al
     const latestBlock = await client.getBlockNumber();
     
@@ -206,27 +174,18 @@ async function fetchTransactionHashes(
       chunks.push({ from, to });
     }
 
-    console.log(`📊 Fetching TX hashes in ${chunks.length} chunks (blocks ${startBlock} to ${latestBlock})`);
 
-    // MessageSent event'lerini chunk chunk çek
+    // MessageStored event'lerini chunk chunk çek
     for (const chunk of chunks) {
       try {
         const sentLogs = await client.getLogs({
           address: contractAddress,
-          event: {
-            type: 'event',
-            name: 'MessageSent',
-            inputs: [
-              { type: 'uint256', name: 'messageId', indexed: true },
-              { type: 'address', name: 'sender', indexed: true },
-              { type: 'address', name: 'receiver', indexed: true },
-            ]
-          },
+          event: messageStoredEvent as any,
           fromBlock: chunk.from,
           toBlock: chunk.to
         });
 
-        // MessageSent event'lerinden transaction hash'leri çıkar
+        // MessageStored event'lerinden transaction hash'leri çıkar
         sentLogs.forEach((log: any) => {
           const messageId = log.args?.messageId?.toString();
           if (messageId && messageIds.some(id => id.toString() === messageId)) {
@@ -238,26 +197,17 @@ async function fetchTransactionHashes(
           }
         });
         
-        console.log(`✅ Chunk ${chunk.from}-${chunk.to}: Found ${sentLogs.length} MessageSent events`);
       } catch (chunkErr) {
-        console.warn(`⚠️ Error fetching MessageSent logs for blocks ${chunk.from}-${chunk.to}:`, chunkErr);
+        console.warn(`⚠️ Error fetching MessageStored logs for blocks ${chunk.from}-${chunk.to}:`, chunkErr);
       }
     }
 
-    // PaymentReceived event'lerini çek (ödeme yapılırken)
+    // MessagePaid event'lerini çek (ödeme yapılırken)
     for (const chunk of chunks) {
       try {
         const paymentLogs = await client.getLogs({
           address: contractAddress,
-          event: {
-            type: 'event',
-            name: 'PaymentReceived',
-            inputs: [
-              { type: 'uint256', name: 'messageId', indexed: true },
-              { type: 'address', name: 'payer', indexed: true },
-              { type: 'uint256', name: 'amount', indexed: false },
-            ]
-          },
+          event: messagePaidEvent as any,
           fromBlock: chunk.from,
           toBlock: chunk.to
         });
@@ -273,15 +223,11 @@ async function fetchTransactionHashes(
           }
         });
         
-        if (paymentLogs.length > 0) {
-          console.log(`✅ Chunk ${chunk.from}-${chunk.to}: Found ${paymentLogs.length} PaymentReceived events`);
-        }
       } catch (chunkErr) {
-        // PaymentReceived event yoksa veya hata varsa (sessiz geç)
+        // MessagePaid event yoksa veya hata varsa (sessiz geç)
       }
     }
     
-    console.log(`✅ Total TX hashes found: ${txHashMap.size}`);
 
   } catch (err) {
     console.error('❌ fetchTransactionHashes error:', err);
@@ -297,11 +243,11 @@ export function MessageList({ refreshKey }: MessageListProps) {
   const contractAddress = useContractAddress();
   const hasContract = useHasContract();
   
-  // Artık sadece Zama kullanıyoruz
-  const isZamaContract = true;
+  // Artık sadece Sealed kullanıyoruz
+  const isSealedContract = true;
   
-  // Sadece Zama ABI kullan
-  const contractAbi = chronoMessageZamaAbi;
+  // Sealed ABI kullan
+  const contractAbi = sealedMessageAbi;
   
   const [items, setItems] = useState<MessageViewModel[]>([]);
   const [loading, setLoading] = useState(false);
@@ -363,11 +309,9 @@ export function MessageList({ refreshKey }: MessageListProps) {
     setAutoRefreshSecondsLeft(AUTO_REFRESH_SECONDS);
 
     try {
-      // Zama contract için farklı yükleme stratejisi
-      if (isZamaContract) {
-        console.log('📡 Loading Zama FHE messages...');
-        
-        // Zama contract: messageCount ile iterate et
+      // SealedMessage contract için tek yükleme stratejisi
+      if (isSealedContract) {
+        // SealedMessage contract: messageCount ile iterate et
         try {
           const messageCountResult = await client.readContract({
             address: contractAddress,
@@ -377,21 +321,35 @@ export function MessageList({ refreshKey }: MessageListProps) {
           });
           
           const messageCount = Number(messageCountResult);
-          console.log(`📊 Total messages in Zama contract: ${messageCount}`);
           
           const allMessages: MessageViewModel[] = [];
           
           // Her mesajın metadata'sını yükle
           for (let i = 0; i < messageCount; i++) {
             try {
-              const metadata = await client.readContract({
+              // getMessage() ile full data al
+              const messageData = await client.readContract({
                 address: contractAddress,
                 abi: contractAbi as any,
-                functionName: "getMessageMetadata",
+                functionName: "getMessage",
                 args: [BigInt(i)]
-              }) as [string, string, bigint, boolean, number, bigint]; // ✅ 6 parametre (v7)
-              
-              const [sender, receiver, unlockTime, isUnlocked, conditionMask, requiredPayment] = metadata;
+              }) as any;
+
+              // getMessageFinancialView() ile financial data al
+              const financialData = await client.readContract({
+                address: contractAddress,
+                abi: contractAbi as any,
+                functionName: "getMessageFinancialView",
+                args: [BigInt(i)]
+              }) as any;
+
+              // Parse data
+              const sender = messageData.sender || messageData[0];
+              const receiver = messageData.receiver || messageData[1];
+              const unlockTime = financialData.unlockTime || 0n;
+              const isUnlocked = financialData.isUnlocked || false;
+              const conditionMask = financialData.conditionMask || 0;
+              const requiredPayment = financialData.requiredPayment || 0n;
               
               // Kullanıcının gönderdiği VEYA aldığı mesajları filtrele
               const isSender = sender.toLowerCase() === userAddress.toLowerCase();
@@ -407,12 +365,12 @@ export function MessageList({ refreshKey }: MessageListProps) {
                   unlocked: isUnlocked,
                   isRead: false,
                   isSent: isSender,
-                  contractAddress: contractAddress, // ✅ Contract address ekle
-                  conditionType: conditionMask, // ✅ Condition mask (0x01=time, 0x02=payment, 0x03=both)
-                  requiredPayment: requiredPayment, // ✅ Payment amount
+                  contractAddress: contractAddress,
+                  conditionType: conditionMask,
+                  requiredPayment: requiredPayment,
                   contentType: 2, // ENCRYPTED
                   relative: dayjs.unix(Number(unlockTime)).fromNow(),
-                  content: "[Encrypted with FHE 🔐]"
+                  content: "[Encrypted message 🔐]"
                 });
               }
             } catch (err) {
@@ -420,20 +378,18 @@ export function MessageList({ refreshKey }: MessageListProps) {
             }
           }
           
-          console.log(`✅ Loaded ${allMessages.length} Zama messages`);
           setItems(allMessages);
           setLastUpdated(new Date());
           setAutoRefreshSecondsLeft(AUTO_REFRESH_SECONDS);
         } catch (err) {
-          console.error('❌ Error loading Zama messages:', err);
+          console.error('❌ Error loading messages:', err);
           setError('Failed to load messages');
         }
         setLoading(false);
         return; // EXIT early - don't run V2/V3.2 code
       }
       
-      // V3.2 / V2 contract için artık destek yok - sadece Zama
-      console.log('⚠️ Non-Zama contract detected - this should not happen!');
+  // V3.2 / V2 contract için artık destek yok - sadece SealedMessage
       setItems([]);
       setLastUpdated(new Date());
       setLoading(false);
@@ -535,7 +491,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
           <h2 className="text-lg font-semibold text-aurora">Messages</h2>
           {contractAddress && (
             <p className="text-xs text-slate-400">
-              Viewing data from <span className="text-sky-300 font-semibold">Zama FHE</span>
+              Viewing data from <span className="text-sky-300 font-semibold">SealedMessage</span>
               {" "}
               (<span className="font-mono text-slate-500">{`${contractAddress.slice(0, 6)}…${contractAddress.slice(-4)}`}</span>)
             </p>

@@ -1,18 +1,22 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useMemo, useState, useRef, useCallback } from "react";
+import { ethers } from "ethers";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
 import relativeTime from "dayjs/plugin/relativeTime";
 import { useAccount, usePrepareContractWrite, useContractWrite, useWaitForTransaction, useNetwork, usePublicClient } from "wagmi";
-import { confidentialMessageAbi } from "../lib/abi-confidential"; // ✅ NEW: EmelMarket Pattern ABI
-import { chronoMessageZamaAbi } from "../lib/abi-zama"; // ✅ v7: Metadata preview
+import * as secp256k1 from "@noble/secp256k1";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { sealedMessageAbi } from "../lib/sealedMessageAbi"; // ✅ v7: Metadata preview
 import { appConfig } from "../lib/env";
 import { decodeEventLog, isAddress, formatUnits } from "viem";
 import { useContractAddress, useHasContract } from "../lib/useContractAddress";
-// EMELMARKET PATTERN - Using useFhe hook
-import { useFhe } from "./FheProvider";
+import { AttachmentBadge } from "./MessagePreview";
+import { aesGcmEncryptMessage, aesGcmEncryptBytes, bytesToHex, hexToBytes } from "../lib/encryption";
+import { generateFallbackKeyPair } from "../lib/fallbackKey";
+import { getOrCreateEncryptionKey } from "../lib/keyAgreement";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -21,6 +25,31 @@ dayjs.extend(relativeTime);
 const DEFAULT_RECEIVER = "" as const;
 const EUINT256_BYTE_CAP = 32;
 const utf8Encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : undefined;
+const ZERO_BYTES32 = ("0x" + "00".repeat(32)) as `0x${string}`;
+
+type EncryptedPayload = {
+  uri: string;
+  iv: `0x${string}`;
+  authTag: `0x${string}`;
+  ciphertextHash: `0x${string}`;
+  metadataCid?: string;
+  metadataKeccak?: `0x${string}`;
+  metadataShortHash?: string;
+  receiverPublicKey: `0x${string}`;
+  senderPublicKey: `0x${string}`;
+  ciphertextBytes: number;
+  sessionKeyCommitment: `0x${string}`;
+  receiverEnvelopeHash: `0x${string}`;
+  escrowCiphertext: `0x${string}`;
+  escrowIv: `0x${string}`;
+  escrowAuthTag: `0x${string}`;
+  escrowKeyVersion: number;
+  receiverEnvelope: {
+    ciphertext: `0x${string}`;
+    iv: `0x${string}`;
+    authTag: `0x${string}`;
+  };
+};
 
 const truncateToUtf8Bytes = (value: string, byteLimit: number) => {
   if (!value) {
@@ -94,17 +123,16 @@ interface MessageFormProps {
 }
 
 export function MessageForm({ onSubmitted }: MessageFormProps) {
+  
   const { isConnected, address: userAddress } = useAccount();
   const { chain } = useNetwork();
   const publicClient = usePublicClient();
   const contractAddress = useContractAddress();
   const hasContract = useHasContract();
   
-  // EMELMARKET PATTERN - Get FHE instance from context
-  const fhe = useFhe();
-  
-  // Zama FHE only - No version switching needed
-  const isZamaContract = true; // Her zaman Zama kullan
+  // AES-256-GCM only - No version switching needed
+  const isSealedContract = true; // Her zaman Sealed kullan
+  const encryptionReady = true;
 
   const [receiver, setReceiver] = useState<string>(DEFAULT_RECEIVER);
   const [content, setContent] = useState("");
@@ -118,6 +146,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [paymentInputMode, setPaymentInputMode] = useState<"ETH" | "Wei">("ETH"); // User-friendly input
   const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Görünen değer
+  const [receiverEncryptionKey, setReceiverEncryptionKey] = useState<string>("");
+  const [receiverKeySource, setReceiverKeySource] = useState<"registered" | "fallback" | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false); // Prevent double submission
+  const [isLoadingReceiverKey, setIsLoadingReceiverKey] = useState(false);
   const [mounted, setMounted] = useState(false);
   const [successToast, setSuccessToast] = useState(false);
   const [userTimezone, setUserTimezone] = useState<string>("UTC");
@@ -130,24 +162,48 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [uploadingFile, setUploadingFile] = useState(false);
   const [contentType, setContentType] = useState<0 | 1>(0); // 0=TEXT, 1=IPFS_HASH
   const [metadataHash, setMetadataHash] = useState<string>(""); // Full metadata IPFS hash
+  const [metadataKeccak, setMetadataKeccak] = useState<`0x${string}` | null>(null);
   const [metadataShortHash, setMetadataShortHash] = useState<string>(""); // 6-char reference stored on-chain
   const [attachmentPreview, setAttachmentPreview] = useState<string | null>(null);
-  const [attachmentPreviewMime, setAttachmentPreviewMime] = useState<string>("image/webp");
+  const [attachmentPreviewMime, setAttachmentPreviewMime] = useState<string>("");
   const [previewIpfsHash, setPreviewIpfsHash] = useState<string>(""); // IPFS hash of preview image
   const [isUploadingPreview, setIsUploadingPreview] = useState(false);
+  const [thumbnailData, setThumbnailData] = useState<string | null>(null); // Auto-generated thumbnail (5x5 or 50x50)
+  const [attachmentMetadata, setAttachmentMetadata] = useState<{
+    type: string;
+    size: number;
+    name: string;
+    dimensions?: { width: number; height: number };
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const lastPersistedHashRef = useRef<string | null>(null);
-  const lastSentPreviewRef = useRef<{ payload: string; truncated: boolean; original?: string | null } | null>(null);
+  const lastSentPreviewRef = useRef<{ 
+    payload: string; 
+    truncated: boolean; 
+    original?: string | null;
+    fileMetadata?: {
+      fileName?: string | null;
+      fileSize?: number | null;
+      mimeType?: string | null;
+      thumbnail?: string | null;
+      dimensions?: { width: number; height: number } | null;
+    } | null;
+  } | null>(null);
   const [plannedUnlockTimestamp, setPlannedUnlockTimestamp] = useState<number>(() => Math.floor(Date.now() / 1000) + 300);
   
-  // Zama FHE state
-  const [fheInstance, setFheInstance] = useState<any>(null);
-  const [encryptedData, setEncryptedData] = useState<{ handles: string[]; inputProof: string; metadataHash?: string; metadataShortHash?: string } | null>(null);
+  // AES-256-GCM state
+  const [encryptedData, setEncryptedData] = useState<EncryptedPayload | null>(null);
   const [isEncrypting, setIsEncrypting] = useState(false);
-  const [fheInitialized, setFheInitialized] = useState(false); // Track if FHE was initialized
   const [chainTimestamp, setChainTimestamp] = useState<number | null>(null);
   const [txUnlockTime, setTxUnlockTime] = useState<number | null>(null);
   const UNLOCK_BUFFER_SECONDS = 0; // No forced buffer - use user's exact time selection
+
+  // Simple validation for auto-loaded receiver key
+  const isReceiverKeyValid = useMemo(() => {
+    if (!receiverEncryptionKey || receiverEncryptionKey.length < 66) return false;
+    const cleaned = receiverEncryptionKey.replace("0x", "");
+    return cleaned.length === 66 && /^[0-9a-fA-F]+$/.test(cleaned);
+  }, [receiverEncryptionKey]);
 
   const computeSafeUnlockTime = (
     chainSeconds: number | null,
@@ -156,11 +212,15 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   ) => {
     const { includeWallClock = true } = options;
     const nowSeconds = Math.floor(Date.now() / 1000);
+    const chainBaseline = typeof chainSeconds === "number" && Number.isFinite(chainSeconds)
+      ? chainSeconds
+      : nowSeconds;
     const sanitizedDesired = typeof desiredSeconds === "number" && Number.isFinite(desiredSeconds)
       ? desiredSeconds
       : nowSeconds;
-    // Just return the desired time - no forced buffer
-    return sanitizedDesired;
+    const safetyBufferSeconds = 90;
+    const minimumUnlock = Math.max(chainBaseline, includeWallClock ? nowSeconds : chainBaseline) + safetyBufferSeconds;
+    return Math.max(sanitizedDesired, minimumUnlock);
   };
   
   // Form validation state
@@ -186,14 +246,53 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + presetDuration);
     // Kullanıcının timezone'unu al
     setUserTimezone(dayjs.tz.guess());
-    
-    console.log("✅ MessageForm mounted", {
-      chainId: chain?.id,
-      isConnected,
-      contractAddress,
-      isZamaContract: true
-    });
   }, []);
+
+  // Auto-load receiver encryption key from contract or generate fallback
+  useEffect(() => {
+    if (!mounted || !receiver || !isAddress(receiver) || !contractAddress || !publicClient) {
+      setReceiverEncryptionKey("");
+      setReceiverKeySource(null);
+      return;
+    }
+
+    const loadReceiverKey = async () => {
+      setIsLoadingReceiverKey(true);
+      try {
+        // Query contract for registered key
+        const registeredKey = await publicClient.readContract({
+          address: contractAddress as `0x${string}`,
+          abi: sealedMessageAbi,
+          functionName: "getEncryptionKey",
+          args: [receiver as `0x${string}`]
+        }) as `0x${string}`;
+
+        if (registeredKey && registeredKey !== "0x" && registeredKey.length > 4) {
+          // Registered key found
+          setReceiverEncryptionKey(registeredKey);
+          setReceiverKeySource("registered");
+        } else {
+          // No registered key, use fallback
+          const fallbackPair = generateFallbackKeyPair(receiver);
+          const fallbackKeyHex = bytesToHex(fallbackPair.publicKey) as `0x${string}`;
+          setReceiverEncryptionKey(fallbackKeyHex);
+          setReceiverKeySource("fallback");
+        }
+      } catch (err) {
+        console.error("❌ Failed to load receiver key:", err);
+        console.error("Full error details:", JSON.stringify(err, null, 2));
+        // Use fallback on error
+        const fallbackPair = generateFallbackKeyPair(receiver);
+        const fallbackKeyHex = bytesToHex(fallbackPair.publicKey) as `0x${string}`;
+        setReceiverEncryptionKey(fallbackKeyHex);
+        setReceiverKeySource("fallback");
+      } finally {
+        setIsLoadingReceiverKey(false);
+      }
+    };
+
+    loadReceiverKey();
+  }, [mounted, receiver, contractAddress, publicClient]);
 
   // Refresh chain timestamp periodically to guard against client clock drift
   useEffect(() => {
@@ -223,77 +322,43 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     };
   }, [publicClient]);
 
-  // Lazy FHE Initialization - using proven fhevmjs SDK
-  const initializeFHE = async () => {
-    if (fheInitialized) return fheInstance; // Already initialized
-    
-    console.log("🚀 Lazy FHE Init starting (fhevmjs SDK)...", {
-      hasContractAddress: !!contractAddress,
-      contractAddress,
-      chainId: chain?.id,
-      chainName: chain?.name,
-    });
-    
-    if (!contractAddress || !chain?.id) {
-      throw new Error("Missing contract or chain");
-    }
-    
-    // Only Sepolia supported
-    if (chain.id !== 11155111) {
-      throw new Error(`Zama FHE only supports Sepolia (chainId: 11155111), current: ${chain.id}`);
-    }
-    
-    try {
-      console.log("🔐 Checking FHE SDK from context (EmelMarket pattern)...");
-      
-      // EMELMARKET PATTERN - FHE instance comes from context, not manual init
-      if (!fhe) {
-        console.log("⏳ FHE SDK still loading from FheProvider...");
-        throw new Error("FHE SDK not ready yet - button should be disabled!");
-      }
-      
-      setFheInstance(fhe);
-      setFheInitialized(true);
-      console.log("✅ FHE SDK ready from context!");
-      
-      return fhe;
-    } catch (err) {
-      console.error("❌ FHE SDK error:", err);
-      throw err;
-    }
-  };
-
   // Encrypt content on-demand (when user clicks send) - EMELMARKET PATTERN
-  const encryptContent = async (instance: any) => {
+  const encryptContent = async () => {
     if (!contractAddress || !userAddress) {
       throw new Error("Missing contract or user address");
     }
 
-    console.log("🔐 Starting encryption with:");
-    console.log("  Contract Address:", contractAddress);
-    console.log("  User Address (msg.sender):", userAddress);
-    console.log("  ⚠️ IMPORTANT: inputProof will be valid ONLY for this userAddress!");
+    if (!isReceiverKeyValid || !receiverEncryptionKey) {
+      throw new Error("Receiver encryption key required");
+    }
 
-  // Şifrelenecek veri: 
-  // 1. Eğer dosya varsa: Metadata IPFS'e yükle → short hash şifrele
-  // 2. Eğer sadece mesaj varsa: uzun içerikler otomatik olarak metadata'ya taşınır
-  let dataToEncrypt = "";
-  let uploadedMetadataHash = ""; // Track metadata hash for return
-  let resolvedShortHash = metadataShortHash; // Track short hash for return
+    const receiverKeyNormalized = receiverEncryptionKey.startsWith("0x")
+      ? receiverEncryptionKey
+      : `0x${receiverEncryptionKey}`;
+    const receiverKeyBytes = hexToBytes(receiverKeyNormalized);
+    if (receiverKeyBytes.length !== 33) {
+      throw new Error("Receiver encryption key must be a compressed secp256k1 public key (33-byte hex)");
+    }
+
+    let dataToEncrypt = "";
+    let uploadedMetadataCid: string | null = null;
+    let uploadedMetadataKeccak: `0x${string}` | null = null;
+    let resolvedShortHash = metadataShortHash || null;
 
     const uploadMetadataJson = async (
       payload: Record<string, unknown>,
       shortHash: string,
       options: {
         label?: string;
-        fileInfo?: { fileName?: string | null; fileSize?: number | null; mimeType?: string | null };
+        fileInfo?: { fileName?: string | null; fileSize?: number | null; mimeType?: string | null; dimensions?: { width: number; height: number } | null };
         debugType?: string;
       } = {}
-    ): Promise<string> => {
+    ): Promise<{ cid: string; keccak: `0x${string}`; json: string }> => {
       const label = options.label ?? "message-meta";
       const payloadType = typeof (payload as any)?.type === "string" ? (payload as any).type : label;
 
       const metadataJson = JSON.stringify(payload);
+      const metadataKeccak = ethers.keccak256(ethers.toUtf8Bytes(metadataJson)) as `0x${string}`;
       const metadataBlob = new Blob([metadataJson], { type: "application/json" });
       const metadataFile = new File([metadataBlob], `${label}.json`, { type: "application/json" });
 
@@ -334,14 +399,9 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const data = await response.json();
       const metadataHashValue = data.IpfsHash as string;
 
-      console.log("✅ Metadata uploaded to IPFS:", metadataHashValue);
-      console.log("📦 Full metadata payload:", payload);
-      console.log("🔗 Metadata URL:", `https://gateway.pinata.cloud/ipfs/${metadataHashValue}`);
-
       const mappingKey = `file-metadata-${shortHash}`;
       try {
         localStorage.setItem(mappingKey, metadataHashValue);
-        console.log(`💾 Saved mapping: ${mappingKey} → ${metadataHashValue}`);
       } catch (err) {
         console.warn("⚠️ Failed to save metadata mapping to localStorage:", err);
       }
@@ -353,6 +413,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           body: JSON.stringify({
             shortHash,
             fullHash: metadataHashValue,
+            metadataKeccak: metadataKeccak ?? undefined,
             fileName: options.fileInfo?.fileName ?? undefined,
             fileSize: options.fileInfo?.fileSize ?? undefined,
             mimeType: options.fileInfo?.mimeType ?? undefined
@@ -367,22 +428,68 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       }
 
       try {
-        const entry = {
-          ts: Date.now(),
-          type: options.debugType ?? "sent-metadata-upload",
-          shortHash,
-          metadataHashValue,
-          fileName: options.fileInfo?.fileName ?? null
-        };
-        const existing = JSON.parse(localStorage.getItem("msg-debug-log") || "[]");
-        existing.push(entry);
-        localStorage.setItem("msg-debug-log", JSON.stringify(existing));
-        console.log("🐛 Debug saved (metadata upload):", entry);
       } catch (e) {
-        console.warn("Failed to write debug log:", e);
+        console.warn("Failed to write metadata mapping cache:", e);
       }
 
-      return metadataHashValue;
+      return { cid: metadataHashValue, keccak: metadataKeccak, json: metadataJson };
+    };
+
+    const uploadCiphertextBinary = async (
+      bytes: Uint8Array,
+      shortHash: string | null
+    ): Promise<{ cid: string; uri: string }> => {
+      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
+      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
+
+      if (!pinataApiKey || !pinataSecretKey) {
+        throw new Error("IPFS credentials not configured");
+      }
+
+    const fileName = shortHash ? `cipher-${shortHash}.bin` : `cipher-${Date.now()}.bin`;
+    const arrayBuffer = new ArrayBuffer(bytes.byteLength);
+    new Uint8Array(arrayBuffer).set(bytes);
+    const blob = new Blob([arrayBuffer], { type: "application/octet-stream" });
+      const file = new File([blob], fileName, { type: "application/octet-stream" });
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append(
+        "pinataMetadata",
+        JSON.stringify({
+          name: fileName,
+          keyvalues: {
+            shortHash: shortHash ?? undefined,
+            type: "sealed-ciphertext"
+          }
+        })
+      );
+
+      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
+        method: "POST",
+        headers: {
+          pinata_api_key: pinataApiKey,
+          pinata_secret_api_key: pinataSecretKey
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error("Ciphertext upload failed");
+      }
+
+    const data = await response.json();
+    const cid = data.IpfsHash as string;
+
+      if (shortHash) {
+        try {
+          localStorage.setItem(`ciphertext-${shortHash}`, cid);
+        } catch (err) {
+          console.warn("⚠️ Failed to cache ciphertext mapping:", err);
+        }
+      }
+
+      return { cid, uri: `ipfs://${cid}` };
     };
 
     if (ipfsHash && attachedFile) {
@@ -390,45 +497,64 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       if (!shortHash) {
         shortHash = generateShortHash();
         setMetadataShortHash(shortHash);
-        console.log("🆔 Generated short hash inside encryptContent:", shortHash);
       }
       resolvedShortHash = shortHash;
 
+      const notePreview = content.trim();
       const fileData = {
         type: "file",
-        ipfs: ipfsHash,
-        name: attachedFile.name,
-        size: attachedFile.size,
-        mimeType: attachedFile.type,
-        message: content.trim() || "",
-        shortHash
+        version: 1,
+        shortHash,
+        hasAttachment: true,
+        attachment: {
+          ipfsHash: ipfsHash,
+          fileName: attachedFile.name,
+          fileSize: attachedFile.size,
+          mimeType: attachedFile.type,
+          dimensions: attachmentMetadata?.dimensions ?? null
+        },
+        preview: {
+          text: notePreview ? notePreview.slice(0, 160) : null,
+          fileName: attachedFile.name,
+          fileSize: attachedFile.size,
+          mimeType: attachedFile.type,
+          thumbnail: thumbnailData || null,
+          ipfsHash: previewIpfsHash || null,
+          dimensions: attachmentMetadata?.dimensions ?? null
+        },
+        createdAt: new Date().toISOString()
       };
 
-      console.log("📎 Uploading file metadata to IPFS...", fileData);
-
-      const metadataHashValue = await uploadMetadataJson(fileData, shortHash, {
+      const metadataUpload = await uploadMetadataJson(fileData, shortHash, {
         label: "message-meta",
         fileInfo: {
           fileName: attachedFile.name,
           fileSize: attachedFile.size,
-          mimeType: attachedFile.type
+          mimeType: attachedFile.type,
+          dimensions: attachmentMetadata?.dimensions ?? null
         },
         debugType: "sent-metadata-upload"
       });
 
-      setMetadataHash(metadataHashValue);
-      uploadedMetadataHash = metadataHashValue;
+      setMetadataHash(metadataUpload.cid);
+      setMetadataKeccak(metadataUpload.keccak);
+      uploadedMetadataCid = metadataUpload.cid;
+      uploadedMetadataKeccak = metadataUpload.keccak;
 
       dataToEncrypt = `F:${shortHash}`;
       lastSentPreviewRef.current = {
         payload: dataToEncrypt,
         truncated: false,
-        original: content.trim() || attachedFile?.name || null
+        original: content.trim() || attachedFile?.name || null,
+        fileMetadata: {
+          fileName: attachedFile.name,
+          fileSize: attachedFile.size,
+          mimeType: attachedFile.type,
+          thumbnail: thumbnailData || null,
+          dimensions: attachmentMetadata?.dimensions || null
+        }
       };
-
-      console.log("🔐 Data to encrypt (file attachment):", dataToEncrypt);
-      console.log("📝 Short hash:", shortHash);
-      console.log("💾 Full metadata hash saved to state:", metadataHashValue);
+      
     } else {
       const plainText = content.trim();
       if (!plainText) {
@@ -443,7 +569,6 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         if (!shortHash) {
           shortHash = generateShortHash();
           setMetadataShortHash(shortHash);
-          console.log("🆔 Generated short hash for long text:", shortHash);
         }
         resolvedShortHash = shortHash;
 
@@ -451,18 +576,15 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           type: "text",
           version: 1,
           shortHash,
-          message: plainText,
+          hasAttachment: false,
           length: plainBytes.length,
-          preview: plainText.slice(0, 160),
+          preview: {
+            text: plainText.slice(0, 160)
+          },
           createdAt: new Date().toISOString()
         };
 
-        console.log("📝 Message exceeds 32-byte limit, offloading to metadata:", {
-          utf8Bytes: plainBytes.length,
-          shortHash
-        });
-
-        const metadataHashValue = await uploadMetadataJson(textMetadata, shortHash, {
+        const metadataUpload = await uploadMetadataJson(textMetadata, shortHash, {
           label: "message-text",
           fileInfo: {
             fileName: `${shortHash}.txt`,
@@ -472,8 +594,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           debugType: "sent-text-metadata-upload"
         });
 
-        setMetadataHash(metadataHashValue);
-        uploadedMetadataHash = metadataHashValue;
+        setMetadataHash(metadataUpload.cid);
+        setMetadataKeccak(metadataUpload.keccak);
+        uploadedMetadataCid = metadataUpload.cid;
+        uploadedMetadataKeccak = metadataUpload.keccak;
 
         dataToEncrypt = `F:${shortHash}`;
         lastSentPreviewRef.current = {
@@ -481,10 +605,14 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           truncated: false,
           original: plainText
         };
-
-        console.log("🔐 Data to encrypt (text metadata):", dataToEncrypt);
-        console.log("💾 Text metadata hash:", metadataHashValue);
+        
       } else {
+        let shortHash = metadataShortHash;
+        if (!shortHash) {
+          shortHash = generateShortHash();
+          setMetadataShortHash(shortHash);
+        }
+        resolvedShortHash = shortHash;
         const { value: truncatedContent, truncated: wasTruncated } = truncateToUtf8Bytes(plainText, EUINT256_BYTE_CAP);
         if (wasTruncated) {
           console.warn("⚠️ Message truncated unexpectedly despite length check");
@@ -495,7 +623,29 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           truncated: wasTruncated,
           original: plainText
         };
-        console.log("📝 Encrypting inline text message (≤32 bytes)");
+        const inlineMetadata = {
+          type: "text-inline",
+          version: 1,
+          shortHash,
+          hasAttachment: false,
+          length: plainText.length,
+          createdAt: new Date().toISOString()
+        };
+
+        const metadataUpload = await uploadMetadataJson(inlineMetadata, shortHash, {
+          label: "message-inline",
+          fileInfo: {
+            fileName: `${shortHash}.meta.json`,
+            fileSize: plainText.length,
+            mimeType: "application/json"
+          },
+          debugType: "sent-inline-metadata-upload"
+        });
+
+        setMetadataHash(metadataUpload.cid);
+        setMetadataKeccak(metadataUpload.keccak);
+        uploadedMetadataCid = metadataUpload.cid;
+        uploadedMetadataKeccak = metadataUpload.keccak;
       }
     }
     
@@ -503,53 +653,141 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       throw new Error("No content to encrypt");
     }
 
-    console.log("🔐 Starting encryption with FHE SDK (EmelMarket pattern)...");
-    console.log("📝 Data to encrypt:", dataToEncrypt);
-    
-    // Convert content to BigInt (256-bit for euint256)
-  const encoder = utf8Encoder ?? new TextEncoder();
-  const contentBytes = encoder.encode(dataToEncrypt);
-    const paddedBytes = new Uint8Array(EUINT256_BYTE_CAP);
-    paddedBytes.set(contentBytes.slice(0, EUINT256_BYTE_CAP));
-    
-    let value = 0n;
-    for (let i = 0; i < EUINT256_BYTE_CAP; i++) {
-      value = (value << 8n) | BigInt(paddedBytes[i]);
-    }
-  console.log("✅ BigInt value ready (256-bit):", value.toString());
-    
-    console.log("🔐 Encryption parameters (only content encrypted):", {
-      contentValue: value.toString(),
-      unlockTime: plannedUnlockTimestamp,
-      paymentAmount: paymentAmount || '0',
-      paymentEnabled
-    });
-    
-    // EMELMARKET PATTERN - Only encrypt content (time+payment are plain text)
-    const encryptedValue = await instance
-      .createEncryptedInput(contractAddress, userAddress)
-      .add256(value)  // Encrypted content only
-      .encrypt();
-    
-    console.log("✅ FHE SDK encryption complete!", {
-      handlesLength: encryptedValue.handles?.length,
-      handlesType: typeof encryptedValue.handles?.[0],
-      contentHandle: encryptedValue.handles?.[0],
-      proofType: typeof encryptedValue.inputProof,
-      proof: encryptedValue.inputProof,
-      fullResult: encryptedValue
-    });
+    const sessionKey = crypto.getRandomValues(new Uint8Array(32));
+    const sessionKeyHex = bytesToHex(sessionKey) as `0x${string}`;
+    const sessionKeyCommitment = ethers.keccak256(sessionKey) as `0x${string}`;
 
-    // Convert to hex strings if needed
-    const handleHex = toHex(encryptedValue.handles[0] as any);
-    const proofHex = toHex(encryptedValue.inputProof as any);
-
-    return {
-      handles: [handleHex],
-      inputProof: proofHex,
-      metadataHash: uploadedMetadataHash, // Return metadata hash if file was uploaded
-      metadataShortHash: resolvedShortHash
+    // Create wallet client for signature
+    const provider = new ethers.BrowserProvider((window as any).ethereum);
+    const signer = await provider.getSigner();
+    const walletClient = {
+      signMessage: async ({ message }: { account?: string; message: string }) => {
+        return await signer.signMessage(message);
+      }
     };
+
+    // Derive sender's encryption keypair from wallet signature (NOT random!)
+  const senderKeyPair = await getOrCreateEncryptionKey(walletClient, userAddress!);
+    
+    // Compute ECDH shared secret
+    const sharedSecret = secp256k1.getSharedSecret(senderKeyPair.privateKey, receiverKeyBytes, true);
+  const derivedKey = sharedSecret.slice(1, 33); // Skip prefix byte (0x02/0x03), take next 32 bytes
+
+    const encryptionResult = await aesGcmEncryptMessage(dataToEncrypt, { key: sessionKey });
+    const combinedCiphertext = new Uint8Array(encryptionResult.ciphertext.length + encryptionResult.authTag.length);
+    combinedCiphertext.set(encryptionResult.ciphertext);
+    combinedCiphertext.set(encryptionResult.authTag, encryptionResult.ciphertext.length);
+
+    const ciphertextHash = ethers.keccak256(combinedCiphertext) as `0x${string}`;
+    const cipherUpload = await uploadCiphertextBinary(combinedCiphertext, resolvedShortHash);
+
+    const ivHex = bytesToHex(encryptionResult.iv) as `0x${string}`;
+    const authTagHex = bytesToHex(encryptionResult.authTag) as `0x${string}`;
+    const senderPublicKeyHex = bytesToHex(senderKeyPair.publicKey) as `0x${string}`;
+
+    const receiverSessionWrap = await aesGcmEncryptBytes(sessionKey, { key: derivedKey });
+    const receiverEnvelopeCipherHex = bytesToHex(receiverSessionWrap.ciphertext) as `0x${string}`;
+    const receiverEnvelopeIvHex = bytesToHex(receiverSessionWrap.iv) as `0x${string}`;
+    const receiverEnvelopeTagHex = bytesToHex(receiverSessionWrap.authTag) as `0x${string}`;
+  const receiverEnvelopeHash = ethers.keccak256(
+      ethers.concat([
+        receiverSessionWrap.ciphertext,
+        receiverSessionWrap.iv,
+        receiverSessionWrap.authTag,
+        senderKeyPair.publicKey
+      ])
+    ) as `0x${string}`;
+
+    const wrapResponse = await fetch("/api/escrow/wrap", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sessionKeyHex,
+        sessionKeyCommitment,
+        metadataShortHash: resolvedShortHash ?? null
+      })
+    });
+
+    if (!wrapResponse.ok) {
+      const text = await wrapResponse.text();
+      throw new Error(`Escrow wrap failed: ${wrapResponse.status} ${text}`);
+    }
+
+    const wrapJson = await wrapResponse.json();
+    if (!wrapJson?.ok || !wrapJson?.wrap) {
+      throw new Error("Escrow wrap response missing payload");
+    }
+
+    const escrowCiphertextHex = wrapJson.wrap.ciphertext as string;
+    const escrowIvHex = wrapJson.wrap.iv as string;
+    const escrowAuthTagHex = wrapJson.wrap.authTag as string;
+    const escrowKeyVersion = Number(wrapJson.wrap.keyVersion ?? 1);
+
+    if (!escrowCiphertextHex || !escrowIvHex || !escrowAuthTagHex) {
+      throw new Error("Escrow wrap returned incomplete data");
+    }
+
+    const escrowCipherBytes = ethers.getBytes(escrowCiphertextHex);
+    const escrowIvBytes = ethers.getBytes(escrowIvHex);
+    const escrowAuthTagBytes = ethers.getBytes(escrowAuthTagHex);
+    if (escrowCipherBytes.length !== 32 || escrowIvBytes.length !== 12 || escrowAuthTagBytes.length !== 16) {
+      throw new Error("Escrow wrap lengths are invalid");
+    }
+
+    const envelopeResponse = await fetch("/api/escrow/envelope", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        commitment: sessionKeyCommitment,
+        receiverEnvelopeHash,
+        ciphertextHash,
+        metadataShortHash: resolvedShortHash ?? null,
+        metadataKeccak: uploadedMetadataKeccak ?? null,
+        senderPublicKey: senderPublicKeyHex,
+        envelope: {
+          ciphertext: receiverEnvelopeCipherHex,
+          iv: receiverEnvelopeIvHex,
+          authTag: receiverEnvelopeTagHex
+        }
+      })
+    });
+
+    if (!envelopeResponse.ok) {
+      const text = await envelopeResponse.text();
+      throw new Error(`Failed to persist receiver envelope: ${envelopeResponse.status} ${text}`);
+    }
+
+    const envelopeJson = await envelopeResponse.json();
+    if (!envelopeJson?.ok) {
+      throw new Error("Receiver envelope persistence failed");
+    }
+
+
+    const payload: EncryptedPayload = {
+      uri: cipherUpload.uri,
+      iv: ivHex,
+      authTag: authTagHex,
+      ciphertextHash,
+      metadataCid: uploadedMetadataCid ?? undefined,
+      metadataKeccak: uploadedMetadataKeccak ?? undefined,
+      metadataShortHash: resolvedShortHash ?? undefined,
+      receiverPublicKey: receiverKeyNormalized as `0x${string}`,
+      senderPublicKey: senderPublicKeyHex,
+      ciphertextBytes: combinedCiphertext.length,
+      sessionKeyCommitment,
+      receiverEnvelopeHash,
+      escrowCiphertext: escrowCiphertextHex as `0x${string}`,
+      escrowIv: escrowIvHex as `0x${string}`,
+      escrowAuthTag: escrowAuthTagHex as `0x${string}`,
+      escrowKeyVersion,
+      receiverEnvelope: {
+        ciphertext: receiverEnvelopeCipherHex,
+        iv: receiverEnvelopeIvHex,
+        authTag: receiverEnvelopeTagHex
+      }
+    };
+
+    return payload;
   };
 
   // Form validation
@@ -573,6 +811,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       isAddress(receiver) &&
       receiver.toLowerCase() !== userAddress?.toLowerCase() &&
       (content.trim().length > 0 || ipfsHash.length > 0) && // Mesaj VEYA dosya olmalı
+      isReceiverKeyValid &&
       plannedUnlockTimestamp > nowSeconds &&
       customValid;
     
@@ -583,6 +822,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     userAddress,
     content,
     ipfsHash,
+    isReceiverKeyValid,
     plannedUnlockTimestamp,
     unlockMode,
     unlock,
@@ -598,40 +838,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const reader = new FileReader();
       reader.onerror = () => resolve(null);
       reader.onload = () => {
-        const img = new Image();
-        img.onerror = () => resolve(null);
-        img.onload = () => {
-          const canvas = document.createElement("canvas");
-          const ctx = canvas.getContext("2d");
-          if (!ctx) {
-            resolve(null);
-            return;
-          }
-
-          const CANVAS_SIZE = 56;
-          canvas.width = CANVAS_SIZE;
-          canvas.height = CANVAS_SIZE;
-
-          const scale = Math.min(CANVAS_SIZE / img.width, CANVAS_SIZE / img.height);
-          const drawWidth = Math.max(1, img.width * scale);
-          const drawHeight = Math.max(1, img.height * scale);
-          const dx = (CANVAS_SIZE - drawWidth) / 2;
-          const dy = (CANVAS_SIZE - drawHeight) / 2;
-
-          ctx.fillStyle = "#0f172a"; // midnight background
-          ctx.fillRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-          ctx.drawImage(img, dx, dy, drawWidth, drawHeight);
-
-          try {
-            const dataUrl = canvas.toDataURL("image/webp", 0.65);
-            resolve(dataUrl);
-          } catch (err) {
-            console.warn("Preview generation failed", err);
-            resolve(null);
-          }
-        };
-
-        img.src = reader.result as string;
+        resolve(reader.result as string);
       };
       reader.readAsDataURL(file);
     });
@@ -709,45 +916,84 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       return;
     }
     
-    const generatedShortHash = generateShortHash();
-    setMetadataShortHash(generatedShortHash);
-    console.log("🆔 Generated short hash for attachment:", generatedShortHash);
+  const generatedShortHash = generateShortHash();
+  setMetadataShortHash(generatedShortHash);
     setAttachedFile(file);
     setError(null);
 
+    // Store attachment metadata
+    setAttachmentMetadata({
+      type: file.type,
+      size: file.size,
+      name: file.name
+    });
+
+    // Auto-generate thumbnails for images
     if (file.type.startsWith('image/')) {
-      generateAttachmentPreview(file)
-        .then(async (preview) => {
-          if (preview) {
-            setAttachmentPreview(preview);
-            setAttachmentPreviewMime("image/webp");
-            
-            // 📤 Upload preview to IPFS
-            await uploadPreviewToIPFS(preview);
-          } else {
-            setAttachmentPreview(null);
-          }
-        })
-        .catch((err) => {
-          console.warn("⚠️ Unable to generate preview", err);
-          setAttachmentPreview(null);
-        });
+      try {
+        // Generate preview (for display in form)
+        const preview = await generateAttachmentPreview(file);
+        if (preview) {
+          const mime = file.type || "image/*";
+          setAttachmentPreview(preview);
+          setAttachmentPreviewMime(mime);
+          
+          // Upload preview to IPFS
+          await uploadPreviewToIPFS(preview, mime);
+        }
+
+  // Auto-generate small thumbnail (25×25) for message list
+        const { generateThumbnail } = await import('@/types/message');
+    const thumbnail = await generateThumbnail(file, 25);
+    setThumbnailData(thumbnail);
+
+        // Get image dimensions
+        const img = new Image();
+        img.onload = () => {
+          setAttachmentMetadata(prev => ({
+            ...prev!,
+            dimensions: { width: img.width, height: img.height }
+          }));
+        };
+        img.src = preview || '';
+
+      } catch (err) {
+        console.warn("⚠️ Unable to generate preview/thumbnail", err);
+        setAttachmentPreview(null);
+        setThumbnailData(null);
+      }
     } else {
+      // Non-image files: no thumbnail
       setAttachmentPreview(null);
+      setAttachmentPreviewMime("");
+      setThumbnailData(null);
     }
-    
+
     // IPFS'e yükle
     await uploadToIPFS(file);
   };
   
   // 📤 Upload preview image to IPFS
-  const uploadPreviewToIPFS = async (base64Data: string) => {
+  const uploadPreviewToIPFS = async (base64Data: string, mimeType?: string) => {
     setIsUploadingPreview(true);
     try {
       // Base64'ü blob'a çevir
       const response = await fetch(base64Data);
       const blob = await response.blob();
-      const file = new File([blob], "preview.webp", { type: "image/webp" });
+      const inferredType = mimeType || blob.type || "image/png";
+      const extension = inferredType.includes("png")
+        ? "png"
+        : inferredType.includes("jpeg") || inferredType.includes("jpg")
+        ? "jpg"
+        : inferredType.includes("gif")
+        ? "gif"
+        : inferredType.includes("webp")
+        ? "webp"
+        : inferredType.includes("svg")
+        ? "svg"
+        : "img";
+      const fileName = `preview.${extension}`;
+      const file = new File([blob], fileName, { type: inferredType });
       
       const formData = new FormData();
       formData.append("file", file);
@@ -772,11 +1018,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       if (!uploadResponse.ok) {
         throw new Error(`Preview upload failed: ${uploadResponse.statusText}`);
       }
-      
+
       const data = await uploadResponse.json();
       const hash = data.IpfsHash;
-      
-      console.log("✅ Preview uploaded to IPFS:", hash);
+
       setPreviewIpfsHash(hash);
     } catch (err) {
       console.warn("⚠️ Preview upload failed:", err);
@@ -819,11 +1064,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         const errorData = await response.json();
         throw new Error(`Upload failed: ${errorData.error || response.statusText}`);
       }
-      
+
       const data = await response.json();
       const hash = data.IpfsHash;
-      
-      console.log("✅ Uploaded to IPFS:", hash);
+
       setIpfsHash(hash);
       setContentType(1); // IPFS_HASH
       
@@ -838,7 +1082,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       setMetadataShortHash("");
       setIpfsHash("");
       setAttachmentPreview(null);
-      setAttachmentPreviewMime("image/webp");
+      setAttachmentPreviewMime("");
     } finally {
       setUploadingFile(false);
     }
@@ -847,11 +1091,14 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const removeAttachment = () => {
     setAttachedFile(null);
     setMetadataShortHash("");
+    setMetadataHash("");
     setIpfsHash("");
+    setPreviewIpfsHash("");
+    setMetadataKeccak(null);
     setContentType(0); // TEXT
     setContent(""); // İçeriği temizle
     setAttachmentPreview(null);
-    setAttachmentPreviewMime("image/webp");
+    setAttachmentPreviewMime("");
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -866,7 +1113,22 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     return computeSafeUnlockTime(chainTimestamp, txUnlockTime, { includeWallClock: false });
   }, [chainTimestamp, txUnlockTime]);
 
-  const shouldPrepare = basePrepareReady && !!encryptedData && !isEncrypting && preparedUnlockTime !== null;
+  const hasEncryptionPayload = useMemo(() => {
+    if (!encryptedData) return false;
+    return Boolean(
+      encryptedData.uri &&
+      encryptedData.iv &&
+      encryptedData.authTag &&
+      encryptedData.ciphertextHash &&
+      encryptedData.escrowCiphertext &&
+      encryptedData.escrowIv &&
+      encryptedData.escrowAuthTag &&
+      encryptedData.sessionKeyCommitment &&
+      encryptedData.receiverEnvelopeHash
+    );
+  }, [encryptedData]);
+
+  const shouldPrepare = basePrepareReady && hasEncryptionPayload && !isEncrypting && preparedUnlockTime !== null;
   
   // Calculate mask: 0x01=time, 0x02=payment, 0x03=both
   const conditionMask = useMemo(() => {
@@ -876,41 +1138,31 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     return mask > 0 ? mask : 0x01; // Default to time-only if nothing selected
   }, [preparedUnlockTime, paymentEnabled, paymentAmount]);
   
-  // Zama Contract Write - FHE encrypted with payment support
-  const { config: configZama, error: prepareError } = usePrepareContractWrite({
+  // Sealed Contract Write - AES-256-GCM encrypted with payment support
+  const { config: configSealed, error: prepareError } = usePrepareContractWrite({
     address: contractAddress as `0x${string}`,
-    abi: chronoMessageZamaAbi, // ✅ v7: Metadata preview ABI
+    abi: sealedMessageAbi, // ✅ SealedMessage ABI
     functionName: "sendMessage",
-    args: encryptedData && isZamaContract && preparedUnlockTime !== null
+    args: encryptedData && isSealedContract && preparedUnlockTime !== null
       ? [
-          receiver as `0x${string}`,
-          encryptedData.handles[0] as `0x${string}`, // externalEuint256 (content handle)
-          encryptedData.inputProof as `0x${string}`, // bytes inputProof
-          BigInt(preparedUnlockTime), // unlockTime (plain text)
-          BigInt(paymentAmount || '0'), // requiredPayment (plain text, wei)
-          conditionMask, // uint8 mask (0x01=time, 0x02=payment, 0x03=both)
-          // 📋 METADATA: File preview information (visible even when locked)
-          attachedFile?.name || "", // fileName
-          BigInt(attachedFile?.size || 0), // fileSize
-          attachedFile?.type || "", // contentType (MIME)
-          previewIpfsHash || "" // previewImageHash (IPFS hash for preview image)
+          receiver as `0x${string}`,                                           // receiver
+          encryptedData.uri,                                                   // uri (ciphertext location)
+          encryptedData.iv,                                                    // iv (12 bytes)
+          encryptedData.authTag,                                               // authTag (16 bytes)
+          encryptedData.ciphertextHash,                                        // ciphertext hash
+          (encryptedData.metadataKeccak ?? ZERO_BYTES32),                      // metadata keccak (optional)
+          encryptedData.escrowCiphertext,                                      // escrow ciphertext (wrapped session key)
+          encryptedData.escrowIv,                                              // escrow IV
+          encryptedData.escrowAuthTag,                                         // escrow auth tag
+          encryptedData.sessionKeyCommitment,                                  // commitment of session key
+          encryptedData.receiverEnvelopeHash,                                  // receiver envelope hash (ECDH)
+          encryptedData.escrowKeyVersion,                                      // escrow key version
+          BigInt(preparedUnlockTime),                                          // unlockTime
+          BigInt(paymentAmount || '0'),                                        // requiredPayment
+          conditionMask                                                         // conditionMask
         ]
       : undefined,
-    enabled: shouldPrepare && isZamaContract,
-    onSuccess: (config: any) => {
-      console.log("✅ usePrepareContractWrite SUCCESS - config ready:", config);
-    },
-    onError: (error: any) => {
-      console.error("❌ usePrepareContractWrite ERROR:", error);
-      console.error("❌ Error message:", error.message);
-      console.error("❌ Error cause:", error.cause);
-      try {
-        const payload = JSON.stringify(error, (_key, value) => typeof value === "bigint" ? value.toString() : value, 2);
-        console.error("❌ Error details:", payload);
-      } catch (jsonErr) {
-        console.error("❌ Error details stringify failed:", jsonErr);
-      }
-    }
+    enabled: shouldPrepare && isSealedContract
   });
 
   // Log prepareError if it exists
@@ -929,22 +1181,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     }
   }, [prepareError]);
   
-  // Zama write hook
-  const zamaWrite = useContractWrite(configZama);
-  const { data, isLoading: isPending, write, error: writeError } = zamaWrite;
-  
-  // Debug logs
-  useEffect(() => {
-    console.log("🔍 Contract Write State:", {
-      hasConfig: !!configZama,
-      hasWrite: !!write,
-      isPending,
-      prepareError: prepareError?.message,
-      writeError: writeError?.message,
-      encryptedData: !!encryptedData
-    });
-  }, [configZama, write, isPending, prepareError, writeError, encryptedData]);
-  
+  // Sealed write hook
+  const contractWrite = useContractWrite(configSealed);
+  const { data, isLoading: isPending, write, error: writeError } = contractWrite;
+
   const { isLoading: isConfirming, isSuccess } = useWaitForTransaction({ 
     hash: data?.hash 
   });
@@ -984,14 +1224,11 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     let cancelled = false;
 
     const persistAndReset = async () => {
-      console.log("✅ MessageForm: Message sent successfully");
-
-      const hashToSave = encryptedData?.metadataHash || metadataHash;
-      const shortHashToSave = encryptedData?.metadataShortHash || metadataShortHash || (hashToSave ? hashToSave.substring(0, 6) : "");
-      if (hashToSave && shortHashToSave) {
+      const cidToSave = encryptedData?.metadataCid || metadataHash;
+      const shortHashToSave = encryptedData?.metadataShortHash || metadataShortHash || (cidToSave ? cidToSave.substring(0, 6) : "");
+      if (cidToSave && shortHashToSave) {
         const mappingKey = `file-metadata-${shortHashToSave}`;
-        localStorage.setItem(mappingKey, hashToSave);
-        console.log(`💾 Saved metadata mapping: ${shortHashToSave} → ${hashToSave}`);
+        localStorage.setItem(mappingKey, cidToSave);
       }
 
       const latestAttachment = attachedFile;
@@ -1007,11 +1244,11 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             }
             try {
               const decoded = decodeEventLog({
-                abi: confidentialMessageAbi,
+                abi: sealedMessageAbi,
                 data: log.data,
                 topics: log.topics
               });
-              if (decoded.eventName === "MessageSent") {
+              if (decoded.eventName === "MessageStored") {
                 const rawId = decoded.args?.messageId as bigint | string | undefined;
                 if (rawId !== undefined && rawId !== null) {
                   resolvedMessageId = typeof rawId === "bigint" ? rawId.toString() : String(rawId);
@@ -1039,8 +1276,6 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             });
             if (!response.ok) {
               console.warn("⚠️ Preview store responded with", response.status, response.statusText);
-            } else {
-              console.log("🖼️ Stored preview for message", resolvedMessageId);
             }
           }
         } catch (err) {
@@ -1051,21 +1286,28 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       try {
         const previewPayload = lastSentPreviewRef.current;
         if (previewPayload && resolvedMessageId) {
-          const storagePrefix = contractAddress ? `${contractAddress.slice(0, 10)}-msg` : 'msg';
-          const storageKey = `${storagePrefix}-sent-preview-${resolvedMessageId}`;
+          // Use consistent key format that MessageCard expects: sent-preview-{id}
+          const storageKey = `sent-preview-${resolvedMessageId}`;
           const payloadToStore = {
             payload: previewPayload.payload,
             truncated: previewPayload.truncated,
             original: previewPayload.original,
-            fileMetadata: latestAttachment
+            fileMetadata: previewPayload.fileMetadata || (latestAttachment
               ? {
                   fileName: latestAttachment.name,
                   fileSize: latestAttachment.size,
-                  mimeType: latestAttachment.type
+                  mimeType: latestAttachment.type,
+                  thumbnail: thumbnailData || null,
+                  dimensions: attachmentMetadata?.dimensions || null
                 }
-              : null
+              : null)
           };
-          localStorage.setItem(storageKey, JSON.stringify(payloadToStore));
+          const serialized = JSON.stringify(payloadToStore);
+          localStorage.setItem(storageKey, serialized);
+          if (contractAddress) {
+            const legacyKey = `${contractAddress.slice(0, 10)}-msg-sent-preview-${resolvedMessageId}`;
+            localStorage.setItem(legacyKey, serialized);
+          }
         }
       } catch (err) {
         console.warn('⚠️ Failed to write sent preview cache', err);
@@ -1080,24 +1322,26 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       setContent("");
       setAttachedFile(null);
       setAttachmentPreview(null);
-      setAttachmentPreviewMime("image/webp");
+      setAttachmentPreviewMime("");
       setIpfsHash("");
       setMetadataHash("");
+      setMetadataKeccak(null);
       setMetadataShortHash("");
+      setPreviewIpfsHash("");
       setContentType(0);
-  setPresetDuration(300);
-  setUnlockMode("preset");
-  setIsPresetsOpen(false);
-  const resetLocal = new Date();
-  const resetYear = resetLocal.getFullYear();
-  const resetMonth = String(resetLocal.getMonth() + 1).padStart(2, '0');
-  const resetDay = String(resetLocal.getDate()).padStart(2, '0');
-  const resetHours = String(resetLocal.getHours()).padStart(2, '0');
-  const resetMinutes = String(resetLocal.getMinutes()).padStart(2, '0');
-  const resetFormatted = `${resetYear}-${resetMonth}-${resetDay}T${resetHours}:${resetMinutes}`;
-  setUnlock(resetFormatted);
-  const defaultPlanned = Math.floor(Date.now() / 1000) + 300;
-  setPlannedUnlockTimestamp(defaultPlanned);
+      setPresetDuration(300);
+      setUnlockMode("preset");
+      setIsPresetsOpen(false);
+      const resetLocal = new Date();
+      const resetYear = resetLocal.getFullYear();
+      const resetMonth = String(resetLocal.getMonth() + 1).padStart(2, '0');
+      const resetDay = String(resetLocal.getDate()).padStart(2, '0');
+      const resetHours = String(resetLocal.getHours()).padStart(2, '0');
+      const resetMinutes = String(resetLocal.getMinutes()).padStart(2, '0');
+      const resetFormatted = `${resetYear}-${resetMonth}-${resetDay}T${resetHours}:${resetMinutes}`;
+      setUnlock(resetFormatted);
+      const defaultPlanned = Math.floor(Date.now() / 1000) + 300;
+      setPlannedUnlockTimestamp(defaultPlanned);
       setEncryptedData(null);
       setTxUnlockTime(null);
       setError(null);
@@ -1127,46 +1371,32 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     onSubmitted
   ]);
 
-  // Auto-send transaction after encryption completes AND write is ready
-  useEffect(() => {
-    console.log("🔍 Auto-send check:", {
-      hasEncryptedData: !!encryptedData,
-      isEncrypting,
-      hasWrite: !!write,
-    });
-    
-    // If encryption just completed and write is ready, auto-send
-    if (encryptedData && !isEncrypting && write) {
-      console.log("📤 Auto-sending transaction now that write() is ready...");
-      setTimeout(() => {
-        try {
-          write();
-        } catch (err) {
-          console.error("❌ Transaction error:", err);
-          setError(`Transaction failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
-        }
-      }, 100); // Small delay to ensure config is fully ready
-    }
-    
-  }, [encryptedData, isEncrypting, write]);
-
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+
+    // Prevent double submission
+    if (isSubmitting) {
+      return;
+    }
     
     if (!isConnected) {
-  setError("Connect your wallet first.");
+      setError("Connect your wallet first.");
       return;
     }
     if (!receiver || !isAddress(receiver)) {
-  setError("Enter a valid recipient address.");
+      setError("Enter a valid recipient address.");
       return;
     }
     if (receiver.toLowerCase() === userAddress?.toLowerCase()) {
-  setError("❌ You cannot send a message to yourself. Please enter a different recipient address.");
+      setError("❌ You cannot send a message to yourself. Please enter a different recipient address.");
       return;
     }
     if (content.trim().length === 0) {
-  setError("Message content cannot be empty.");
+      setError("Message content cannot be empty.");
+      return;
+    }
+    if (!isReceiverKeyValid || !receiverEncryptionKey) {
+      setError("Receiver encryption key is required.");
       return;
     }
     
@@ -1199,19 +1429,13 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
 
     setError(null);
     
-    // If already encrypted, do nothing (auto-send will handle it)
-    if (encryptedData && !isEncrypting) {
-      console.log("📤 Already encrypted, waiting for auto-send...");
-      setError("⏳ Preparing transaction...");
-      return;
-    }
+    // Set submitting flag
+    setIsSubmitting(true);
     
     // Encrypt content
     setIsEncrypting(true);
     
     try {
-      console.log("📤 Starting Zama FHE encryption...");
-
       let latestChainTimestamp = chainTimestamp;
       if (publicClient) {
         try {
@@ -1226,65 +1450,103 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const safeUnlockForTx = computeSafeUnlockTime(latestChainTimestamp ?? chainTimestamp, desiredUnlock);
       setTxUnlockTime(safeUnlockForTx);
 
-      console.log("⏱️ Unlock time prepared", {
-        userSelected: desiredUnlock,
-        chainBase: latestChainTimestamp ?? chainTimestamp,
-        enforcedUnlock: safeUnlockForTx,
-        bufferSeconds: UNLOCK_BUFFER_SECONDS
-      });
-      
-      // Initialize FHE if not already initialized
-      let instance = fheInstance;
-      if (!instance) {
-        console.log("🔧 FHE not initialized, initializing now...");
-        const initialized = await initializeFHE();
-        if (!initialized) {
-          throw new Error("Failed to initialize FHE");
-        }
-        instance = initialized;
-      }
-      
+      // Initialize encryption if not already initialized
       // Encrypt content
-      console.log("🔐 Encrypting content...");
-      const encrypted = await encryptContent(instance as any);
+      const encrypted = await encryptContent();
       setEncryptedData(encrypted);
-      // Debug: save encrypted payload entry
-      try {
-        const entry = {
-          ts: Date.now(),
-          type: 'sent-encrypted-complete',
-          handles: encrypted.handles,
-          proof: encrypted.inputProof,
-          metadataHash: encrypted.metadataHash,
-          metadataShortHash: encrypted.metadataShortHash
-        };
-        const existing = JSON.parse(localStorage.getItem('msg-debug-log') || '[]');
-        existing.push(entry);
-        localStorage.setItem('msg-debug-log', JSON.stringify(existing));
-        console.log('🐛 Debug saved (sent-encrypted-complete):', entry);
-      } catch (e) {
-        console.warn('Failed to write debug log (sent-encrypted-complete):', e);
-      }
-      
+
       // Eğer dosya varsa metadata hash'i de kaydet
-      if (encrypted.metadataHash) {
-        setMetadataHash(encrypted.metadataHash);
-        console.log("💾 Metadata hash set to state:", encrypted.metadataHash);
+      if (encrypted.metadataCid) {
+        setMetadataHash(encrypted.metadataCid);
+      }
+      if (encrypted.metadataKeccak) {
+        setMetadataKeccak(encrypted.metadataKeccak);
       }
       if (encrypted.metadataShortHash) {
         setMetadataShortHash(encrypted.metadataShortHash);
-        console.log("🔖 Short hash set to state:", encrypted.metadataShortHash);
       }
       
       setIsEncrypting(false);
+
+      // Send transaction directly with ethers instead of waiting for wagmi hooks
+      try {
+        if (!contractAddress) {
+          throw new Error("Contract address not available");
+        }
+        
+        const provider = new ethers.BrowserProvider((window as any).ethereum);
+        const signer = await provider.getSigner();
+        const contract = new ethers.Contract(contractAddress as string, sealedMessageAbi, signer);
+
+        const tx = await contract.sendMessage(
+          receiver as `0x${string}`,
+          encrypted.uri,
+          encrypted.iv,
+          encrypted.authTag,
+          encrypted.ciphertextHash,
+          encrypted.metadataKeccak ?? ethers.ZeroHash,
+          encrypted.escrowCiphertext,
+          encrypted.escrowIv,
+          encrypted.escrowAuthTag,
+          encrypted.sessionKeyCommitment,
+          encrypted.receiverEnvelopeHash,
+          encrypted.escrowKeyVersion,
+          BigInt(safeUnlockForTx),
+          BigInt(paymentAmount || '0'),
+          conditionMask
+        );
+        setError(`⏳ Transaction sent: ${tx.hash.slice(0, 10)}...`);
+        
+        const receipt = await tx.wait();
+        // Extract message ID from MessageSealed event and save metadata CID
+        try {
+          const iface = new ethers.Interface(sealedMessageAbi);
+          const messageSealedEvent = receipt.logs
+            .map((log: any) => {
+              try {
+                return iface.parseLog(log);
+              } catch {
+                return null;
+              }
+            })
+            .find((parsed: any) => parsed?.name === 'MessageSealed');
+          
+          if (messageSealedEvent && encrypted.metadataCid) {
+            const messageId = messageSealedEvent.args[0]?.toString();
+            if (messageId) {
+              const metadataCidKey = `metadata-cid-${messageId}`;
+              localStorage.setItem(metadataCidKey, encrypted.metadataCid);
+            }
+          }
+        } catch (err) {
+          console.warn('⚠️ Failed to extract message ID or save metadata CID:', err);
+        }
+        
+        setError(null);
+        
+        // Reset form
+        setContent("");
+        setEncryptedData(null);
+        setMetadataHash("");
+        setMetadataKeccak(null);
+        setMetadataShortHash("");
+        setIsSubmitting(false); // Reset flag
+        
+        if (onSubmitted) {
+          onSubmitted();
+        }
+        
+      } catch (txErr: any) {
+        console.error("❌ Transaction error:", txErr);
+        setError(`Transaction failed: ${txErr.message || 'Unknown error'}`);
+        setIsSubmitting(false); // Reset flag on error
+      }
       
-      console.log("✅ Encryption complete! Waiting for transaction to auto-send...");
-      setError(null); // Clear error - success status will show in separate indicator
-      
-  } catch (err) {
+    } catch (err) {
       console.error("❌ Error:", err);
       setError(`Failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
       setIsEncrypting(false);
+      setIsSubmitting(false); // Reset flag on error
     }
   };
 
@@ -1348,16 +1610,16 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       {contractAddress && (
         <div className="rounded-lg border border-cyber-blue/40 bg-cyber-blue/10 px-4 py-2 text-xs text-cyber-blue">
           <p>
-            Active contract: <span className="font-semibold">Zama FHE 🔐</span>
+            Active contract: <span className="font-semibold">AES-256-GCM 🔐</span>
             {" "}
             (<span className="font-mono">{`${contractAddress.slice(0, 6)}…${contractAddress.slice(-4)}`}</span>)
           </p>
         </div>
       )}
       <div className="hidden rounded-lg border border-amber-400/50 bg-amber-900/20 px-4 py-2 text-xs text-amber-200">
-        <p className="font-semibold">Heads-up: Zama relayer fees</p>
+        <p className="font-semibold">Heads-up: Sealed relayer fees</p>
         <p className="mt-1 leading-relaxed">
-          Proof validation, decrypt, and bridge operations require <span className="font-mono">$ZAMA</span> credits. Decide whether the app, the relayer, or end users cover these costs before going live.
+          Proof validation, decrypt, and bridge operations consume relayer credits. Decide whether the app, the relayer, or end users cover these costs before going live.
         </p>
       </div>
       <div className="flex flex-col gap-2">
@@ -1387,9 +1649,52 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         )}
       </div>
 
+      {/* Receiver Encryption Key Status - Auto-loaded */}
+      {receiver && isAddress(receiver) && (
+        <div className="rounded-lg border border-cyber-blue/30 bg-cyber-blue/5 p-4">
+          <div className="flex items-start gap-3">
+            {isLoadingReceiverKey ? (
+              <>
+                <div className="animate-spin rounded-full h-5 w-5 border-2 border-cyber-blue border-t-transparent" />
+                <div>
+                  <p className="text-sm font-medium text-cyber-blue">Loading encryption key...</p>
+                  <p className="text-xs text-text-light/60 mt-1">Querying contract for receiver&apos;s registered key</p>
+                </div>
+              </>
+            ) : receiverKeySource === "registered" ? (
+              <>
+                <span className="text-2xl">✅</span>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-emerald-400">Receiver has registered encryption key</p>
+                  <p className="text-xs text-text-light/60 mt-1">
+                    Using receiver&apos;s on-chain registered public key for ECDH encryption
+                  </p>
+                  <code className="mt-2 block text-xs font-mono text-emerald-300/80 break-all">
+                    {receiverEncryptionKey.slice(0, 20)}...{receiverEncryptionKey.slice(-20)}
+                  </code>
+                </div>
+              </>
+            ) : receiverKeySource === "fallback" ? (
+              <>
+                <span className="text-2xl">⚠️</span>
+                <div className="flex-1">
+                  <p className="text-sm font-medium text-amber-400">Using fallback encryption</p>
+                  <p className="text-xs text-text-light/60 mt-1">
+                    Receiver hasn&apos;t registered yet. Using deterministic fallback key derived from their address.
+                  </p>
+                  <p className="text-xs text-amber-300/80 mt-2">
+                    💡 Receiver can decrypt this message by connecting to the DApp (no registration needed first time)
+                  </p>
+                </div>
+              </>
+            ) : null}
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-2">
         <label htmlFor="content" className="text-sm font-semibold uppercase tracking-wide text-cyber-blue">
-          Message
+          Message {content.length > 0 && <span className="text-xs text-gray-400 ml-2">({content.length} characters)</span>}
         </label>
         <textarea
           id="content"
@@ -1421,38 +1726,33 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
               {uploadingFile ? "Uploading..." : "Attach File"}
             </button>
           ) : (
-            <div className="flex-1 flex items-center justify-between rounded-lg border border-green-500/40 bg-green-900/20 px-4 py-2">
-              <div className="flex items-center gap-2 text-sm text-green-300">
-                <span>
-                  {attachedFile.type.startsWith('image/') ? '🖼️' : 
-                   attachedFile.type === 'application/pdf' ? '📄' :
-                   attachedFile.type.startsWith('video/') ? '🎬' :
-                   attachedFile.type === 'application/vnd.android.package-archive' ? '📱' : '📎'}
-                </span>
-                <span className="font-medium">{attachedFile.name}</span>
-                <span className="text-xs text-green-400/60">
-                  ({(attachedFile.size / 1024 / 1024).toFixed(2)} MB)
-                </span>
+            <div className="space-y-2">
+              <AttachmentBadge
+                fileName={attachedFile.name}
+                fileSize={attachedFile.size}
+                mimeType={attachedFile.type}
+                thumbnail={thumbnailData || attachmentPreview || undefined}
+                onRemove={removeAttachment}
+              />
+              
+              {/* Additional metadata info */}
+              <div className="flex items-center gap-3 text-xs text-green-400/80">
                 {ipfsHash && (
-                  <span className="text-xs text-green-400 font-mono">
-                    ✅ IPFS: {ipfsHash.slice(0, 8)}...
+                  <span className="font-mono">
+                    ✅ IPFS: {ipfsHash.slice(0, 8)}...{ipfsHash.slice(-6)}
+                  </span>
+                )}
+                {attachmentMetadata?.dimensions && (
+                  <span>
+                    📐 {attachmentMetadata.dimensions.width}×{attachmentMetadata.dimensions.height}
+                  </span>
+                )}
+                {thumbnailData && (
+                  <span>
+                    🖼️ Thumbnail ready (25×25)
                   </span>
                 )}
               </div>
-              {attachmentPreview && (
-                <img
-                  src={attachmentPreview}
-                  alt="Attachment preview"
-                  className="ml-3 h-12 w-12 rounded border border-purple-500/40 object-cover"
-                />
-              )}
-              <button
-                type="button"
-                onClick={removeAttachment}
-                className="text-red-400 hover:text-red-300 transition"
-              >
-                ❌
-              </button>
             </div>
           )}
         </div>
@@ -1623,7 +1923,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             </div>
             <div className="pt-2 border-t border-slate-700">
               <p className="text-text-light/50 italic">
-                ℹ️ Blockchain uses UTC time. The message will unlock at this UTC time regardless of the recipient's location.
+                ℹ️ Blockchain uses UTC time. The message will unlock at this UTC time regardless of the recipient&apos;s location.
               </p>
             </div>
           </div>
@@ -1767,11 +2067,11 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         )}
       </div>
       
-      {/* Zama FHE encryption status */}
+      {/* AES-256-GCM encryption status */}
       {isEncrypting && (
         <div className="rounded-lg bg-neon-green/10 border border-neon-green/40 p-3 text-sm text-neon-green flex items-center gap-2">
           <span className="animate-spin">⟳</span>
-          <span>🔐 Encrypting message with Zama FHE...</span>
+          <span>🔐 Encrypting message with AES-256-GCM...</span>
         </div>
       )}
       {encryptedData && !isEncrypting && !write && (
@@ -1782,32 +2082,33 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       )}
       {encryptedData && !isEncrypting && write && (
         <div className="rounded-lg bg-green-500/10 border border-green-400/40 p-3 text-sm text-green-300">
-          ✅ Message encrypted successfully with Zama FHE
+          ✅ Message encrypted successfully with AES-256-GCM
         </div>
       )}
       
       {error ? <p className="text-sm text-red-400">{error}</p> : null}
-      
-      {/* FHE SDK Loading Indicator */}
-      {!fhe && (
+      {/* Encryption System Loading Indicator */}
+      {!encryptionReady && (
         <div className="text-sm text-yellow-400 mb-2">
-          ⏳ Loading FHE encryption system...
+          ⏳ Şifreleme sistemi yükleniyor...
         </div>
       )}
       
       <button
         type="submit"
-        disabled={!fhe || isPending || isConfirming || isEncrypting || (!!encryptedData && !write)}
+        disabled={!encryptionReady || isPending || isConfirming || isEncrypting || isSubmitting || (!!encryptedData && !write)}
         className="w-full rounded-lg bg-gradient-to-r from-aurora via-sky-500 to-sunset px-4 py-3 text-center text-sm font-semibold uppercase tracking-widest text-slate-900 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
       >
-        {!fhe
-          ? "⏳ Initializing FHE..."
+        {!encryptionReady
+          ? "⏳ Hazırlanıyor..."
+          : isSubmitting
+          ? "⏳ İşlem devam ediyor..."
           : isEncrypting 
-          ? "🔐 Encrypting..." 
+          ? "🔐 Şifreleniyor..." 
           : isPending || isConfirming 
-            ? "📤 Sending transaction..." 
+            ? "📤 İşlem gönderiliyor..." 
             : encryptedData && !write
-              ? "⏳ Preparing transaction..."
+              ? "⏳ İşlem hazırlanıyor..."
               : "🔐 Send Message"}
       </button>
       {data?.hash ? (

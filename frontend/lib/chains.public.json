@@ -1,0 +1,54 @@
+{
+  "sepolia": {
+    "id": 11155111,
+    "name": "Sepolia",
+    "network": "sepolia",
+    "testnet": true,
+    "nativeCurrency": {
+      "name": "Sepolia Ether",
+      "symbol": "ETH",
+      "decimals": 18
+    },
+    "rpcUrls": {
+      "default": "https://ethereum-sepolia-rpc.publicnode.com",
+      "public": "https://rpc.sepolia.org",
+      "infuraBase": "https://sepolia.infura.io/v3/"
+    },
+    "blockExplorer": "https://sepolia.etherscan.io",
+    "faucet": "https://sepoliafaucet.com/"
+  },
+  "baseSepolia": {
+    "id": 84532,
+    "name": "Base Sepolia",
+    "network": "base-sepolia",
+    "testnet": true,
+    "nativeCurrency": {
+      "name": "Ether",
+      "symbol": "ETH",
+      "decimals": 18
+    },
+    "rpcUrls": {
+      "default": "https://sepolia.base.org",
+      "public": "https://sepolia.base.org"
+    },
+    "blockExplorer": "https://sepolia.basescan.org",
+    "faucet": "https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet"
+  },
+  "scrollSepolia": {
+    "id": 534351,
+    "name": "Scroll Sepolia",
+    "network": "scroll-sepolia",
+    "testnet": true,
+    "nativeCurrency": {
+      "name": "Ether",
+      "symbol": "ETH",
+      "decimals": 18
+    },
+    "rpcUrls": {
+      "default": "https://sepolia-rpc.scroll.io",
+      "public": "https://sepolia-rpc.scroll.io"
+    },
+    "blockExplorer": "https://sepolia.scrollscan.dev",
+    "faucet": "https://scroll.io/alpha/faucet"
+  }
+}

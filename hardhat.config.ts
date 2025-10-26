@@ -166,18 +166,17 @@ const config: HardhatUserConfig = {
   defaultNetwork: "hardhat",
   networks,
   etherscan: {
-    apiKey: {
-      sepolia: process.env.ETHERSCAN_API_KEY ?? "",
-      mainnet: process.env.ETHERSCAN_API_KEY ?? "",
-      polygon: process.env.POLYGONSCAN_API_KEY ?? "",
-      polygonMumbai: process.env.POLYGONSCAN_API_KEY ?? "",
-      polygonAmoy: process.env.POLYGONSCAN_API_KEY ?? "",
-      baseSepolia: process.env.BASESCAN_API_KEY ?? "",
-      lineaSepolia: process.env.LINEASCAN_API_KEY ?? "",
-      arbitrumSepolia: process.env.ARBISCAN_API_KEY ?? "",
-      optimismSepolia: process.env.OPTIMISTIC_ETHERSCAN_API_KEY ?? "",
-      scrollSepolia: process.env.SCROLLSCAN_API_KEY ?? ""
-    }
+    apiKey: process.env.ETHERSCAN_API_KEY ?? "",
+    customChains: [
+      {
+        network: "sepolia",
+        chainId: 11155111,
+        urls: {
+          apiURL: "https://api-sepolia.etherscan.io/api",
+          browserURL: "https://sepolia.etherscan.io"
+        }
+      }
+    ]
   }
 };
 

@@ -4,6 +4,7 @@ import { upsertMapping, getAllMappings } from "@/lib/metadataStore";
 interface PostBody {
   shortHash?: string;
   fullHash?: string;
+  metadataKeccak?: string;
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
@@ -19,6 +20,7 @@ export async function POST(request: Request) {
     const record = await upsertMapping({
       shortHash: body.shortHash,
       fullHash: body.fullHash,
+      metadataKeccak: body.metadataKeccak,
       fileName: body.fileName,
       fileSize: body.fileSize,
       mimeType: body.mimeType

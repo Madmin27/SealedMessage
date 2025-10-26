@@ -1,8 +1,36 @@
 // ========================================
-// ZAMA FHE ONLY - No Version Switching
+// SealedMessage configuration (single contract per chain)
 // ========================================
 
+import { defineChain } from "viem";
+import rawChainData from "./chains.public.json";
+
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+
+const INFURA_KEY = process.env.NEXT_PUBLIC_INFURA_API_KEY || "";
+
+type PublicChainConfig = {
+  id: number;
+  name: string;
+  network: string;
+  testnet: boolean;
+  nativeCurrency: { name: string; symbol: string; decimals: number };
+  rpcUrls: {
+    default: string;
+    public?: string;
+    infuraBase?: string;
+  };
+  blockExplorer?: string;
+  faucet?: string;
+};
+
+const chainData = rawChainData as Record<string, PublicChainConfig>;
+
+const CONTRACT_ADDRESSES: Record<string, string | undefined> = {
+  sepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_SEPOLIA,
+  baseSepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_BASE_SEPOLIA,
+  scrollSepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_SCROLL_SEPOLIA
+};
 
 export type ChainDefinition = {
   id: number;
@@ -16,75 +44,82 @@ export type ChainDefinition = {
     infura?: string;
   };
   blockExplorer?: string;
-  zamaContractAddress: `0x${string}`; // Tek kontrat - Zama FHE
+  contractAddress: `0x${string}`;
   faucet?: string;
 };
 
-export const supportedChains: Record<string, ChainDefinition> = {
-  sepolia: {
-    id: 11155111,
-    name: 'Sepolia',
-    network: 'sepolia',
-    testnet: true,
-    nativeCurrency: { name: 'Sepolia Ether', symbol: 'ETH', decimals: 18 },
-    rpcUrls: {
-      default: 'https://ethereum-sepolia-rpc.publicnode.com',
-      public: 'https://rpc.sepolia.org',
-      infura: 'https://sepolia.infura.io/v3/e6aecc89c96940a5a671b2ad96afe68a'
-    },
-    blockExplorer: 'https://sepolia.etherscan.io',
-  zamaContractAddress: '0x492dC50D888eFFDB0f8D1B3aB9e6C7D8209f9e3B', // ✅ Updated for euint256 payload support
-    faucet: 'https://sepoliafaucet.com/'
+export const supportedChains: Record<string, ChainDefinition> = Object.entries(chainData).reduce(
+  (accumulator, [key, config]) => {
+    const rpcUrls = {
+      default: config.rpcUrls.default,
+      public: config.rpcUrls.public ?? config.rpcUrls.default,
+      infura:
+        config.rpcUrls.infuraBase && INFURA_KEY
+          ? `${config.rpcUrls.infuraBase}${INFURA_KEY}`
+          : undefined
+    };
+
+    const contractAddress = (CONTRACT_ADDRESSES[key] || ZERO_ADDRESS) as `0x${string}`;
+
+    accumulator[key] = {
+      id: config.id,
+      name: config.name,
+      network: config.network,
+      testnet: config.testnet,
+      nativeCurrency: config.nativeCurrency,
+      rpcUrls,
+      blockExplorer: config.blockExplorer,
+      contractAddress,
+      faucet: config.faucet
+    };
+
+    return accumulator;
   },
-  baseSepolia: {
-    id: 84532,
-    name: 'Base Sepolia',
-    network: 'base-sepolia',
-    testnet: true,
-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    rpcUrls: {
-      default: 'https://sepolia.base.org',
-      public: 'https://sepolia.base.org'
-    },
-    blockExplorer: 'https://sepolia.basescan.org',
-    zamaContractAddress: '0xb2aaF71A28B16c0940320dd1A7D9ecce01f2D01f',
-    faucet: 'https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet'
-  },
-  scrollSepolia: {
-    id: 534351,
-    name: 'Scroll Sepolia',
-    network: 'scroll-sepolia',
-    testnet: true,
-    nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
-    rpcUrls: {
-      default: 'https://sepolia-rpc.scroll.io',
-      public: 'https://sepolia-rpc.scroll.io'
-    },
-    blockExplorer: 'https://sepolia.scrollscan.dev',
-    zamaContractAddress: '0x7aA33fF1b5e1183334653983e75165Eefd71c481',
-    faucet: 'https://scroll.io/alpha/faucet'
-  }
-};
+  {} as Record<string, ChainDefinition>
+);
 
 export type ChainKey = keyof typeof supportedChains;
 export type ChainConfig = ChainDefinition;
 
 // ========================================
-// Helper Functions - Zama FHE Only
+// Helper Functions
 // ========================================
 
-// Get chain config by ID
+export function getChainByKey(chainKey: string): ChainConfig | undefined {
+  return supportedChains[chainKey];
+}
+
 export function getChainById(chainId: number): ChainConfig | undefined {
-  return Object.values(supportedChains).find(chain => chain.id === chainId);
+  return Object.values(supportedChains).find((chain) => chain.id === chainId);
 }
 
-// Check if chain is supported
 export function isChainSupported(chainId: number): boolean {
-  return Object.values(supportedChains).some(chain => chain.id === chainId);
+  return Object.values(supportedChains).some((chain) => chain.id === chainId);
 }
 
-// Get Zama contract address for chain
-export function getZamaContractAddress(chainId: number): `0x${string}` | undefined {
+export function getContractAddress(chainId: number): `0x${string}` | undefined {
   const chain = getChainById(chainId);
-  return chain?.zamaContractAddress !== ZERO_ADDRESS ? chain?.zamaContractAddress : undefined;
+  return chain?.contractAddress !== ZERO_ADDRESS ? chain?.contractAddress : undefined;
+}
+
+export function toViemChain(chain: ChainConfig) {
+  return defineChain({
+    id: chain.id,
+    name: chain.name,
+    network: chain.network,
+    nativeCurrency: chain.nativeCurrency,
+    rpcUrls: {
+      default: { http: [chain.rpcUrls.default] },
+      public: { http: [chain.rpcUrls.public ?? chain.rpcUrls.default] }
+    },
+    blockExplorers: chain.blockExplorer
+      ? {
+          default: {
+            name: "Explorer",
+            url: chain.blockExplorer
+          }
+        }
+      : undefined,
+    testnet: chain.testnet
+  });
 }

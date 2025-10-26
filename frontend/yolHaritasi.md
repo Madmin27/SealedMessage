@@ -1,80 +1,55 @@
-Kesinlikle zama FHE kullanılarak EVM ağlarında şifreli mesaj göndermeye çalışacağız.
-Başka şifrelemler ile bypass yapma
-Öncelikle sadece sepolia ağında yapacağız
 
-Farklı test ve mainnet ağlar için de ekleyelim. Base öncelikli
- 
-Bir nft satılmışsa ve hangi cüzdandaysa, ona açılan mesaj
+AES-256-GCM şifreleme API'si eklenecek
+ECDH key exchange implementasyonu yapılacak
+IPFS'e şifreli veri yüklenecek
 
-https://github.com/zama-ai/fhevm 
- burada  nasıl
+Şifreleme sisteminin daha sağlam ve çözülemez ve hızlı olması için contract değişikliği gerekiyorsa çekinme yap.
+Geçici çözümler uyguladınsa unutma ve tekrar sağlamlaştır.
 
-https://docs.zama.ai/protocol/relayer-sdk-guides
+Keylerim dosyaların içerisinde değil, her zaman env dosyalarında olsun ve tek biryerden çekilsin
 
- https://x.com/zama_fhe/status/1963526230960959991  
+Testleri bitince bakalım
+Test sürecinde eski mesajları önemseme, sorunsuz olursa, komple yeniden deploy ederiz
 
- emel market nft reposuna bak. hatasız çalışan bir projedir. Orada nasıl yapılmış.
-https://github.com/Madmin27/open-nft-marketplace
+Zaman koşullu gibi payment koşullu messsaj da göndermemiz gerekebilr. Metadaata içerisinde alan olması gerekiyorsa yerini şimdiden yap
 
+Tüm mesajları bir defada çekme yerine, son 5 mesajı çekip, öncekiler butonuna tıklanırsa 5 tanden öncekiler çekilsin
 
-
+Her zaman türkçe yanıt ver
+Projedeki yorum ve açıklamlar ve uyarılar ingilizce olsun
 npx hardhat compile
-
-npm run build
-
-
-cd /root/zamamessage && rm -rf .next node_modules/.cache frontend/.next frontend/node_modules/.cache
-cd /root/zamamessage/frontend && npm install
-cd /root/zamamessage/frontend && npm run build
-sudo systemctl restart sealedmessage-frontend 
-
-gerekiyorsa cache temizliği, rebuilt ve 
- sudo systemctl restart sealedmessage-frontend 
  
- && sleep 3 && sudo systemctl status sealedmessage-frontend
+cd /root/Dapps/SealedMessage/frontend &&
+rm -rf .next node_modules/.cache &&
+npm run build &&
+sudo systemctl restart sealed.service
 
-Test Mesaj"
-Kestane kebap, acele cevap...
-Kestane kebap, acele cevap...
-Kestane kebap, acele cevap...
-Kestane kebap, acele cevap...
- '^'!'^+%&/()=?_>£#$½{[]}\|
- Kestane kebap, acele cevap...
- "
 
-sudo systemctl restart sealedmessage-frontend && echo "✅ Frontend restart edildi" && echo "" && echo "🌐 BROWSER CACHE TEMİZLEME:" && echo "1. Chrome/Firefox: Ctrl+Shift+Del" && echo "2. Veya Hard Refresh: Ctrl+Shift+R" && echo "3. Veya Incognito/Private mode ile test et"
+port 3005 de çalışıyor
 
-grep -EHrn "0x50587bC2bef7C66bC2952F126ADbafCc4Ab9c9D0" .
+gerekiyorsa cache temizliği, rebuilt ve restart service
+Artık Wagmi hooks bypass edildi ve direkt ethers.js ile transaction gönderiliyor!
 
-grep -EHrn "iekbcc0 ju367va ju367v1s" . --exclude-dir=./.next/cache
-grep -EHrn "unitPrice" . --exclude-dir=var --exclude=*.js
-grep -EHrn "https://hepsiantep\.com" .
-grep -EHrn "http://54\.38\.239\.188" . # Kendi IP adresiniz
 
-grep -EHrn "admin58" . --exclude-dir=var
-grep -EHrn "product-price" . --include=\*.js --exclude-dir=./.next/cache
+// grep -EHrn "Scan the file for malware before downloading." . --exclude-dir=var
+// grep -EHrn "fff" . --include=\*.js --exclude-dir=./.next/cache
+ 
+Gönderici ve alıcı akışlarının yeniden tasarlanması
+- Gönderici tarafında üç katmanlı şifreleme: env + HSM fallback anahtar parçaları ile dış katmanı üret, escrow-dağıtımlı oturum anahtarını AES-256-GCM ile sar, alıcıya özel ECIES katmanını ekle.
+- Contract değişikliğinde sadece escrow tarafından çözülebilecek oturum anahtarını sakla, zaman ve ödeme koşullarını aynı yapıda tut.
+- Gönderici testleri: yeni akışta mesaj oluştur, IPFS'e şifreli blob yükle, contract kaydının eski koşulları sağlamadığını ve erken çözümlemenin engellendiğini doğrula.
+- Alıcı testleri: mesaj kilidi açılmadan deşifre etmeyi dene (başarısız olmalı), kilit açıldıktan sonra çok katmanlı çözüm adımlarını sırayla uygula ve içerik erişimini doğrula.
 
- Not: 
-### Zama Sepolia FHE Gönderim Planı
+her buildden önce cache temizliği yap
+- Her iki test turundan sonra `cd /root/Dapps/SealedMessage/frontend && npm run build` ile ön yüzü yeniden doğrula, gerekirse servis restart et.
 
-- Kaynaklar:
-	- Forum: https://community.zama.ai/t/problem-with-relayer-v1-create-input-on-sepolia/3534/2 → `/v1/create-input` endpoint'i kaldırıldı, relayer SDK içindeki `createEncryptedInput` akışı kullanılmalı.
-	- WebApp rehberi: https://docs.zama.ai/protocol/relayer-sdk-guides/development-guide/webapp → frontend tarafı için SDK init + instance örnekleri.
-	- Solidity migration rehberi: https://docs.zama.ai/protocol/solidity-guides/development-guide/migration → sözleşmeleri SepoliaConfig ile uyumlu tutmak için.
+Sıradaki Görevler
+güvenlik kontrollerine, gereksiz debugların silinmesine, denk gelirsen türkçe ifadelerin ingilizce yapılmasına.
+Gereksiz test fonksiyon ve test dosyalarının kaldırılmasına geçebiliriz.
 
-- Yapılanlar:
-	- `TestTFHEPattern` SepoliaConfig'ten miras alacak şekilde güncellendi ve Sepolia'da 0x07b4314c9cC7478F665416425d8d5B80Ba610eB1 adresine deploy edildi.
-	- Relayer SDK `createEncryptedInput(...).add64(...).encrypt()` akışıyla test edildi; `storeValue` çağrısı başarıyla onaylandı (tx: 0xf5914…7ff9).
-	- Frontend `FheProvider` ve `TestNewFHEAPI` bileşeni yeni kontrat ve varsayılan Sepolia konfigi ile çalışacak şekilde güncellendi.
-	- `.env.local` üzerindeki `NEXT_PUBLIC_CONTRACT_ADDRESS` yeni kontrata alındı.
+Sonrasında şifreleme sistemini kontrol etmek için env dosyasını kullanmadan dışarıdan bir betikle aşabilecek miyiz, yani alıcı bizim zaman ve ödeme koşullarını aşarak okuyabilecek mi? onların kontrollerini yapacağız
 
-- Sıradaki adımlar:
-	1. ✅ `MessageForm` akışını `createEncryptedInput` zinciriyle hizala (test bileşenindeki pattern reused).
-	2. ✅ Ana mesaj kontratını yeni API ile yeniden deploy et ve adresi `.env.local` üzerinden frontend'e geçir (0xbD9212F5Df6073a86E6E43813bEDd026C9561468).
-	3. ✅ Kullanıcıya $ZAMA fee gerekliliklerini anlatan uyarı/bilgi tooltip'i ekle.
-	4. ⏳ Base Sepolia deployment planı için aynı pipeline'ı hazırlayıp relayer konfig override'larını environment tabanlı yap.
+Sonra env dosyamıza 2 tane key koymuştuk, birin başka güvenli bir sunucuya vea şifreli alana taşıyacaktık
 
-- Ücret Notları (Zama Confidential Blockchain Protocol):
-	- ZKPoK doğrulaması, decrypt ve cross-chain bridge işlemleri $ZAMA token ile ücretli.
-	- Ücretler USD bazlı; bit başına ~$0.016 – $0.0002 arası.
-	- Ücreti kullanıcı, frontend ya da relayer üstlenebilir → uygulama tarafında hangi model seçileceğine karar verilmeli.
+Keyler dosyalarda ise env dosyalarına taşı
+Contract adresi gibi değişebilecek olanları da env dosyalarına taşı
