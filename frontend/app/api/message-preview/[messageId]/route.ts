@@ -40,6 +40,11 @@ function resolveRpcUrl(chainKey: string | undefined, config: ChainConfig) {
     if (typeof overridden === "string" && overridden.length > 0) {
       return overridden;
     }
+    const publicEnvKey = `NEXT_PUBLIC_${chainKey.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}_RPC_URL`;
+    const publicOverride = process.env[publicEnvKey as keyof NodeJS.ProcessEnv];
+    if (typeof publicOverride === "string" && publicOverride.length > 0) {
+      return publicOverride;
+    }
   }
   if (config.id === defaultChainConfig.id) {
     return defaultResolvedRpcUrl;
@@ -148,6 +153,15 @@ export async function GET(request: Request, context: RouteContext) {
 
   try {
     const url = new URL(request.url);
+    const viewerParam = url.searchParams.get("viewer")?.trim();
+    const viewer = typeof viewerParam === "string" && /^0x[0-9a-fA-F]{40}$/.test(viewerParam)
+      ? (viewerParam as `0x${string}`)
+      : undefined;
+
+    if (!viewer) {
+      return NextResponse.json({ error: "viewer address required" }, { status: 401 });
+    }
+
     const { client: publicClient, contractAddress } = resolveChainContext(url.searchParams);
 
     // getMessage ve getMessageFinancialView kullan
@@ -155,14 +169,16 @@ export async function GET(request: Request, context: RouteContext) {
       address: contractAddress,
       abi: sealedMessageAbi,
       functionName: "getMessage",
-      args: [BigInt(messageId)]
+      args: [BigInt(messageId)],
+      account: viewer
     }) as any;
 
     const financialData = await publicClient.readContract({
       address: contractAddress,
       abi: sealedMessageAbi,
       functionName: "getMessageFinancialView",
-      args: [BigInt(messageId)]
+      args: [BigInt(messageId)],
+      account: viewer
     }) as any;
 
     return NextResponse.json({
@@ -180,6 +196,10 @@ export async function GET(request: Request, context: RouteContext) {
       }
     });
   } catch (err) {
+    const message = (err as { message?: string }).message ?? "";
+    if (typeof message === "string" && message.includes("Only sender or receiver")) {
+      return NextResponse.json({ error: "Access denied" }, { status: 403 });
+    }
     if (isMessageMissingError(err)) {
       console.warn(`message-preview/[${messageId}] missing on requested chain`);
       return NextResponse.json({ error: "Message not found on this chain" }, { status: 404 });

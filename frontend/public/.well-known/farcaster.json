@@ -1,30 +1,30 @@
 {
   "accountAssociation": {
-    "header": "eyJmaWQiOjU5OTY2NywidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweDU1QTA3NzNlMDhERjU5MmJCZjBEMDZjNmYxZDVDQzU0YjA5MWY5NkMifQ",
-    "payload": "eyJkb21haW4iOiJ6YW1hLm1pbmVuLmNvbS50ciJ9",
-    "signature": "MHg2ODA5MmIxMDE1ZWI1MDVhOGJkZDlhZjQyMzAwNmNmYTFjZjQ4YjAzMTJkNTgzNjYzZWQ4MTcyZjM0YzdiMDUxM2E5OTU0NTg4MzVjNDE0MDlkY2Q5NDFiYmI0OTNjNjQ0ZjFkNWRjNzUzZTA3NTM2ODRkNTJhM2MwZGM4MjUxODFj"
+    "header": "eyJmaWQiOjU5OTY2NywidHlwZSI6ImF1dGgiLCJrZXkiOiIweDZiOTE0RjkxODAxMkI3NGQyMDNENEU4M0M2ZTkyZjAxZWYyNzliQ2MifQ",
+    "payload": "eyJkb21haW4iOiJzZWFsZWQubWluZW4uY29tLnRyIn0",
+    "signature": "QHiYw0ByckkeY8hZOAAQmLHthct+yWG+ZdWj1H4fbUFZu2L2KioOU4FdaGFva+aHrCprLPq+WFyZeW9ftkT7GBw="
   },
   "baseBuilder": {
-    "allowedAddresses": ["0xbF7Ca51aD0f96B6a80bdD6E14432b9F4D798e9e3"]
+    "ownerAddress": "0xbF7Ca51aD0f96B6a80bdD6E14432b9F4D798e9e3"
   },
   "miniapp": {
     "version": "1",
     "name": "SealedMessage",
-    "homeUrl": "https://zama.minen.com.tr",
-    "iconUrl": "https://zama.minen.com.tr/icon.png",
-    "splashImageUrl": "https://zama.minen.com.tr/icon.png",
-    "splashBackgroundColor": "#0f172a",
-    "subtitle": "Time-locked messages",
-    "description": "Send encrypted messages that can only be read after a specific time. Built on Base blockchain with privacy in mind.",
-    "screenshotUrls": [],
+    "subtitle": "Encrypted time-locked chat",
+    "description": "Send end-to-end encrypted messages that unlock only after time or payment conditions are met on Base.",
+    "homeUrl": "https://sealed.minen.com.tr",
+    "iconUrl": "https://sealed.minen.com.tr/icon-512.png",
+    "splashImageUrl": "https://sealed.minen.com.tr/256x256.png",
+    "splashBackgroundColor": "#0F172A",
+    "screenshotUrls": ["https://sealed.minen.com.tr/preview.png"],
     "primaryCategory": "social",
-    "tags": ["messaging", "privacy", "blockchain", "base", "timelock"],
-    "heroImageUrl": "https://zama.minen.com.tr/preview.png",
-    "tagline": "Messages unlock with time",
-    "ogTitle": "SealedMessage",
-    "ogDescription": "Send encrypted messages that unlock at a specific time on Base blockchain",
-    "ogImageUrl": "https://zama.minen.com.tr/preview.png",
+    "tags": ["messaging", "privacy", "base", "timelock", "web3"],
+    "heroImageUrl": "https://sealed.minen.com.tr/preview.png",
+    "tagline": "Unlock messages with time",
+    "ogTitle": "SealedMessage on Base",
+    "ogDescription": "Send encrypted, time-locked messages on Base.",
+    "ogImageUrl": "https://sealed.minen.com.tr/preview.png",
     "noindex": false,
-    "requiredChains": ["eip155:84532", "eip155:11155111"]
+    "requiredChains": ["eip155:8453", "eip155:84532", "eip155:11155111"]
   }
 }

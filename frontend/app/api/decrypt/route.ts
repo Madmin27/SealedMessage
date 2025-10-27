@@ -45,6 +45,11 @@ function resolveRpcUrl(chainKey: string | undefined, config: ChainConfig) {
 		if (typeof overridden === "string" && overridden.length > 0) {
 			return overridden;
 		}
+		const publicEnvKey = `NEXT_PUBLIC_${chainKey.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase()}_RPC_URL`;
+		const publicOverride = process.env[publicEnvKey as keyof NodeJS.ProcessEnv];
+		if (typeof publicOverride === "string" && publicOverride.length > 0) {
+			return publicOverride;
+		}
 	}
 	if (config.id === defaultChainConfig.id) {
 		return defaultResolvedRpcUrl;
@@ -236,6 +241,15 @@ function isMessageMissingError(error: unknown): boolean {
 export async function POST(request: Request) {
 	try {
 		const body = await request.json();
+		const viewerParam = typeof body.viewerAddress === "string" ? body.viewerAddress.trim() : undefined;
+		const viewer = viewerParam && /^0x[0-9a-fA-F]{40}$/.test(viewerParam)
+			? (viewerParam as `0x${string}`)
+			: undefined;
+
+		if (!viewer) {
+			return NextResponse.json({ error: "viewerAddress is required" }, { status: 401 });
+		}
+
 		const { client: publicClient, contractAddress, config: activeChain } = resolveChainContext({
 			chainKey: body.chainKey,
 			chainId: body.chainId
@@ -264,14 +278,16 @@ export async function POST(request: Request) {
 			address: contractAddress,
 			abi: sealedMessageAbi,
 			functionName: "getMessage",
-			args: [messageId]
+			args: [messageId],
+			account: viewer
 		}) as any;
 
 		const financialView = await publicClient.readContract({
 			address: contractAddress,
 			abi: sealedMessageAbi,
 			functionName: "getMessageFinancialView",
-			args: [messageId]
+			args: [messageId],
+			account: viewer
 		}) as any;
 
 		if (!financialView?.isUnlocked) {

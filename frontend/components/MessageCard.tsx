@@ -4,18 +4,21 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useContractWrite, useWaitForTransaction, usePublicClient, useAccount, usePrepareContractWrite, useWalletClient } from "wagmi";
 import dayjs from "dayjs";
 import duration from "dayjs/plugin/duration";
+import relativeTime from "dayjs/plugin/relativeTime";
 import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { appConfig } from "../lib/env";
 import { useContractAddress } from "../lib/useContractAddress";
+import { getChainById, ZERO_ADDRESS, type ChainKey } from "../lib/chains";
 import { generateFallbackKeyPair } from "../lib/keyAgreement";
 import type { DecryptOptions } from "../lib/decryption";
 import { useNetwork } from "wagmi";
 import { IPFSFileDisplay } from "./IPFSFileDisplay";
 import { MessagePreview, AttachmentBadge } from "./MessagePreview";
 import { MessagePreviewData } from "@/types/message";
-import { formatUnits } from "viem";
+import { formatUnits, keccak256 } from "viem";
 
 dayjs.extend(duration);
+dayjs.extend(relativeTime);
 
 interface MessageCardProps {
   id: bigint;
@@ -45,7 +48,9 @@ interface MessageCardProps {
     type: string;
   };
   chainId?: number;
-  chainKey?: string;
+  chainKey?: ChainKey;
+  createdAt?: bigint;
+  createdDate?: string | null;
 }
 
 interface SentPreviewCache {
@@ -404,6 +409,8 @@ export function MessageCard({
   requiredPayment,
   paidAmount,
   conditionType,
+  createdAt,
+  createdDate,
   transactionHash,
   paymentTxHash,
   contentType,
@@ -411,18 +418,40 @@ export function MessageCard({
   chainId: propsChainId,
   chainKey: propsChainKey
 }: MessageCardProps) {
-  const client = usePublicClient();
   const { address: userAddress } = useAccount();
   const { data: walletClient } = useWalletClient();
   const hookContractAddress = useContractAddress(); // Hook'tan gelen (current)
   const { chain } = useNetwork();
   const activeChainId = chain?.id;
   const messageChainId = propsChainId ?? activeChainId;
+  const client = usePublicClient(
+    typeof messageChainId === "number" && Number.isFinite(messageChainId)
+      ? { chainId: messageChainId }
+      : undefined
+  );
+  const messageChainConfig = useMemo(() => {
+    if (typeof messageChainId !== "number" || !Number.isFinite(messageChainId)) {
+      return undefined;
+    }
+    return getChainById(messageChainId);
+  }, [messageChainId]);
   const messageChainKey = propsChainKey;
   const explorerBaseUrl = useMemo(() => {
+    if (messageChainConfig?.blockExplorer) {
+      return messageChainConfig.blockExplorer;
+    }
     const explorerUrl = chain?.blockExplorers?.default?.url;
     return explorerUrl ?? appConfig.chain.explorerUrl ?? "";
-  }, [chain]);
+  }, [chain, messageChainConfig]);
+  const walletOnExpectedChain = useMemo(() => {
+    if (typeof messageChainId !== "number" || !Number.isFinite(messageChainId)) {
+      return true;
+    }
+    if (typeof activeChainId !== "number" || !Number.isFinite(activeChainId)) {
+      return false;
+    }
+    return activeChainId === messageChainId;
+  }, [activeChainId, messageChainId]);
   const encryptionReady = true;
   const encryptionLoading = false;
   const buildChainQuery = useCallback(() => {
@@ -433,19 +462,41 @@ export function MessageCard({
     if (typeof messageChainId === "number" && Number.isFinite(messageChainId)) {
       params.set("chainId", messageChainId.toString());
     }
+    if (userAddress) {
+      params.set("viewer", userAddress);
+    }
     const query = params.toString();
     return query ? `?${query}` : "";
-  }, [messageChainKey, messageChainId]);
+  }, [messageChainKey, messageChainId, userAddress]);
   const [prefetchedHandle, setPrefetchedHandle] = useState<unknown | null>(null);
   
   // ✅ Props'tan gelen varsa onu kullan, yoksa hook'tan gelenı kullan
-  const contractAddress = (propsContractAddress || hookContractAddress) as `0x${string}` | undefined;
+  const resolvedContractAddress = useMemo(() => {
+    if (propsContractAddress && propsContractAddress !== ZERO_ADDRESS) {
+      return propsContractAddress as `0x${string}`;
+    }
+    const messageContract = messageChainConfig?.contractAddress;
+    if (messageContract && messageContract !== ZERO_ADDRESS) {
+      return messageContract as `0x${string}`;
+    }
+    if (hookContractAddress && hookContractAddress !== ZERO_ADDRESS) {
+      return hookContractAddress;
+    }
+    return undefined;
+  }, [propsContractAddress, messageChainConfig, hookContractAddress]);
+  const contractAddress = resolvedContractAddress;
   
   // 🔑 Cache key: contract address bazlı (eski contract'larla karışmasın)
-  const cacheKey = useMemo(() => 
-    contractAddress ? `${contractAddress.slice(0, 10)}-msg` : 'msg',
-    [contractAddress]
-  );
+  const cacheKey = useMemo(() => {
+    if (contractAddress) {
+      const prefix = contractAddress.slice(0, 10);
+      const chainSuffix = typeof messageChainId === "number" && Number.isFinite(messageChainId)
+        ? `-${messageChainId}`
+        : "";
+      return `${prefix}-msg${chainSuffix}`;
+    }
+    return "msg";
+  }, [contractAddress, messageChainId]);
   
   // localStorage'dan initial state yükle (basit key, sonra cacheKey ile güncellenecek)
   const [messageContent, setMessageContent] = useState<string | null>(null);
@@ -520,10 +571,11 @@ export function MessageCard({
     fileSize: bigint;
     contentType: string;
     previewImageHash: string;
-  thumbnail?: string; // 25×25 thumbnail (base64)
+	thumbnail?: string; // 25×25 thumbnail (base64)
     dimensions?: { width: number; height: number }; // Original image dimensions
     hasAttachment?: boolean;
     previewText?: string;
+    isImage?: boolean;
   } | null>(null);
   const [isLoadingPreviewMeta, setIsLoadingPreviewMeta] = useState(false);
   
@@ -558,6 +610,23 @@ export function MessageCard({
     metadataReadyRef.current = false;
   }, [id, contractAddress]);
 
+  useEffect(() => {
+    if (!isSent) {
+      return;
+    }
+
+    const nextConditionMask = typeof conditionType === "number" ? conditionType : 0;
+    const nextRequiredPayment = typeof requiredPayment === "bigint" ? requiredPayment : 0n;
+    const nextPaidAmount = typeof paidAmount === "bigint" ? paidAmount : 0n;
+
+    setConditionMask(nextConditionMask);
+    setRequiredPaymentAmount(nextRequiredPayment);
+    setPaidAmountOnchain(nextPaidAmount);
+    setOnchainUnlocked(Boolean(unlocked));
+    setMetadataLoaded(true);
+    metadataReadyRef.current = true;
+  }, [isSent, conditionType, requiredPayment, paidAmount, unlocked]);
+
   // 🔄 localStorage'dan cache'i yükle (cacheKey hazır olduğunda)
   useEffect(() => {
     if (typeof window === 'undefined' || !cacheKey) return;
@@ -567,20 +636,19 @@ export function MessageCard({
     if (sentPreview) {
       try {
         const parsed = JSON.parse(sentPreview) as SentPreviewCache;
-        if (parsed && typeof parsed === 'object') {
-          setSentPreviewInfo(parsed);
-          if (parsed.fileMetadata) {
-            const { fileName, fileSize, mimeType } = parsed.fileMetadata;
-            setPreviewMetadata((current) => {
-              if (current) {
-                return current;
-              }
-              return {
-                fileName: fileName ?? '',
-                fileSize: BigInt(Math.max(0, Math.floor(fileSize ?? 0))),
-                contentType: mimeType ?? '',
-                previewImageHash: ''
-              };
+          if (parsed && typeof parsed === 'object') {
+            setSentPreviewInfo(parsed);
+            if (parsed.fileMetadata) {
+            const { fileName, fileSize, mimeType, thumbnail } = parsed.fileMetadata;
+            const normalizedMimeType = typeof mimeType === 'string' ? mimeType : '';
+            const isImageMime = normalizedMimeType.toLowerCase().startsWith('image/');
+            setPreviewMetadata({
+              fileName: fileName ?? '',
+              fileSize: BigInt(Math.max(0, Math.floor(fileSize ?? 0))),
+              contentType: normalizedMimeType,
+              previewImageHash: '',
+              thumbnail: isImageMime && typeof thumbnail === 'string' ? thumbnail : undefined,
+              isImage: isImageMime
             });
           }
         }
@@ -605,7 +673,8 @@ export function MessageCard({
     setPreviewPollingDisabled(false);
     setPreviewDataUrl(null);
     setPreviewError(null);
-    setSentPreviewInfo(null);
+    setPreviewMetadata(null);
+    setFileMetadataState(null);
   }, [id]);
 
   useEffect(() => {
@@ -631,6 +700,12 @@ export function MessageCard({
       return true;
     }
 
+    if (!userAddress) {
+      setMetadataLoaded(false);
+      metadataReadyRef.current = false;
+      return false;
+    }
+
     const cachedUnlocked = typeof window !== 'undefined' && cacheKey
       ? localStorage.getItem(`${cacheKey}-unlocked-${id}`) === 'true'
       : false;
@@ -640,7 +715,8 @@ export function MessageCard({
         address: contractAddress,
         abi: sealedMessageAbi as any,
         functionName: "getMessageFinancialView",
-        args: [id]
+        args: [id],
+        account: userAddress as `0x${string}`
       }) as any;
 
       // getMessageFinancialView returns a struct: { unlockTime, requiredPayment, paidAmount, conditionMask, isUnlocked }
@@ -728,83 +804,145 @@ export function MessageCard({
 
   // 📋 PREVIEW METADATA: Fetch file preview info from IPFS
   const fetchPreviewMetadata = useCallback(async () => {
-    if (!client || !contractAddress) return;
-    
+    if (!client || !contractAddress || !userAddress) return;
+
     setIsLoadingPreviewMeta(true);
     try {
-      // Check localStorage first for metadata CID
-      if (typeof window !== 'undefined') {
-        const metadataCidKey = `metadata-cid-${id}`;
-        const cachedMetadataCid = window.localStorage.getItem(metadataCidKey);
-        
-        if (cachedMetadataCid) {
-          try {
-            const metadataRes = await fetch(`/api/ipfs/${cachedMetadataCid}`, { cache: 'no-store' });
-            
-            if (metadataRes.ok) {
-              const metadata = await metadataRes.json();
-              
-              const normalized = normaliseMetadataPayload(metadata);
-              
-              // Map NormalizedMetadata to previewMetadata state format
-              setPreviewMetadata({
-                fileName: normalized.name || '',
-                fileSize: BigInt(normalized.size || 0),
-                contentType: normalized.mimeType || '',
-                previewImageHash: normalized.ipfs || normalized.fullHash || '',
-                thumbnail: normalized.thumbnail,
-                dimensions: normalized.dimensions,
-                hasAttachment: normalized.hasAttachment ?? normalized.type === 'file',
-                previewText: normalized.message || normalized.previewText
-              });
-              return;
-            } else {
-              console.warn('⚠️ Metadata fetch failed for cached CID:', metadataRes.status);
-            }
-          } catch (err) {
-            console.warn('⚠️ Error fetching cached metadata:', err);
-          }
-        }
-      }
+      const metadataCidKey = `${cacheKey}-metadata-cid-${id}`;
+      const legacyMetadataKey = `metadata-cid-${id}`;
 
-      // Read message from contract to obtain URI and metadata hash
       const message = await client.readContract({
         address: contractAddress,
         abi: sealedMessageAbi,
         functionName: "getMessage",
-        args: [id]
+        args: [id],
+        account: userAddress as `0x${string}`
       }) as any;
 
-  // Tuple: [sender, receiver, uri, iv, authTag, ciphertextHash, metadataHash, escrowCiphertext, escrowIv, escrowAuthTag, sessionKeyCommitment, receiverEnvelopeHash, escrowKeyVersion, ...]
-      const uri = (message[2] ?? '') as string;
-      const metadataHash = (message[6] ?? '') as string;
-      
-      // metadataHash is Keccak256, not IPFS CID! Attempt to resolve via backend mapping.
-      const zeroHash = '0x0000000000000000000000000000000000000000000000000000000000000000';
-      let hashToFetch: string | null = null;
+      const uri = (message[2] ?? "") as string;
+      const metadataHashRaw = (message[6] ?? "") as string;
 
-      if (metadataHash && metadataHash !== zeroHash) {
-        const normalizedMetadataHash = metadataHash.toLowerCase();
+      const zeroHash = "0x0000000000000000000000000000000000000000000000000000000000000000";
+      const normalizedMetadataHash = typeof metadataHashRaw === "string" ? metadataHashRaw.toLowerCase() : "";
+      const hasMetadataHash = Boolean(normalizedMetadataHash && normalizedMetadataHash !== zeroHash);
+
+      const shortHashMatch = uri.includes("F:") ? uri.match(/F:([a-zA-Z0-9]{6,8})/) : null;
+      const shortHashFromUri = shortHashMatch ? shortHashMatch[1] : null;
+
+      const applyNormalizedMetadata = (normalized: NormalizedMetadata) => {
+        const resolvedPreviewText = isSent
+          ? normalized.message || normalized.previewText
+          : undefined;
+
+        setPreviewMetadata({
+          fileName: normalized.name || "",
+          fileSize: BigInt(normalized.size || 0),
+          contentType: normalized.mimeType || "",
+          previewImageHash: normalized.ipfs || normalized.fullHash || "",
+          thumbnail: normalized.thumbnail,
+          dimensions: normalized.dimensions,
+          hasAttachment: normalized.hasAttachment ?? normalized.type === "file",
+          previewText: resolvedPreviewText,
+          isImage: typeof normalized.mimeType === "string" ? normalized.mimeType.toLowerCase().startsWith("image/") : undefined
+        });
+      };
+
+      const fetchAndValidateMetadata = async (cid: string): Promise<{ normalized: NormalizedMetadata | null; mismatch: boolean }> => {
+        const sanitizedCid = cid.replace(/^ipfs:\/\//i, "");
+        try {
+          const response = await fetch(`/api/ipfs/${sanitizedCid}`, { cache: "no-store" });
+          if (!response.ok) {
+            throw new Error(`API returned ${response.status}`);
+          }
+
+          const contentType = response.headers.get("content-type") || "";
+          if (!contentType.includes("application/json") && !contentType.includes("text/")) {
+            return { normalized: null, mismatch: false };
+          }
+
+          const rawText = await response.text();
+          if (!rawText) {
+            return { normalized: null, mismatch: false };
+          }
+
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(rawText);
+          } catch {
+            parsed = null;
+          }
+
+          if (!parsed || typeof parsed !== "object") {
+            return { normalized: null, mismatch: false };
+          }
+
+          if (hasMetadataHash) {
+            const encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
+            if (!encoder) {
+              console.warn("⚠️ TextEncoder unavailable, skipping metadata hash validation.");
+            } else {
+              const computedHash = keccak256(encoder.encode(rawText));
+              if (computedHash.toLowerCase() !== normalizedMetadataHash) {
+                console.warn(`⚠️ Metadata keccak mismatch for CID ${sanitizedCid}. Expected ${normalizedMetadataHash}, got ${computedHash}`);
+                return { normalized: null, mismatch: true };
+              }
+            }
+          }
+
+          const normalized = normaliseMetadataPayload(parsed, {
+            shortHash: shortHashFromUri ?? undefined,
+            fullHash: sanitizedCid
+          });
+
+          return { normalized, mismatch: false };
+        } catch (err) {
+          console.warn("⚠️ API metadata fetch failed:", err instanceof Error ? err.message : err);
+          return { normalized: null, mismatch: false };
+        }
+      };
+
+      if (typeof window !== "undefined") {
+        try {
+          window.localStorage.removeItem(legacyMetadataKey);
+        } catch (storageErr) {
+          console.warn("⚠️ Failed to remove legacy metadata cache:", storageErr);
+        }
+
+        const cachedCid = window.localStorage.getItem(metadataCidKey);
+        if (cachedCid) {
+          const { normalized, mismatch } = await fetchAndValidateMetadata(cachedCid);
+          if (normalized) {
+            applyNormalizedMetadata(normalized);
+            return;
+          }
+          if (mismatch) {
+            window.localStorage.removeItem(metadataCidKey);
+          }
+        }
+      }
+
+      let candidateCid: string | null = null;
+
+      if (hasMetadataHash) {
         const attempts = attemptedMetadataHashesRef.current;
 
-        // Check localStorage cache to see if we recently confirmed this hash is missing
-        if (typeof window !== 'undefined') {
+        if (typeof window !== "undefined") {
           try {
-            const cacheKey = `${missingMetadataHashCacheKeyPrefix}${normalizedMetadataHash}`;
-            const cached = window.localStorage.getItem(cacheKey);
+            const cacheEntryKey = `${missingMetadataHashCacheKeyPrefix}${normalizedMetadataHash}`;
+            const cached = window.localStorage.getItem(cacheEntryKey);
             if (cached) {
               const parsed = JSON.parse(cached);
-              const tsValue = typeof parsed?.ts === 'number' ? parsed.ts : Number(parsed?.ts);
+              const tsValue = typeof parsed?.ts === "number" ? parsed.ts : Number(parsed?.ts);
               if (Number.isFinite(tsValue)) {
                 const age = Date.now() - tsValue;
                 if (age < missingMetadataHashRecheckMs) {
-                  console.debug('⏳ Skipping metadata hash lookup (recent 404 cache):', normalizedMetadataHash);
+                  console.debug("⏳ Skipping metadata hash lookup (recent 404 cache):", normalizedMetadataHash);
                   attempts.add(normalizedMetadataHash);
                 }
               }
             }
           } catch (cacheErr) {
-            console.warn('⚠️ Failed to read metadata hash 404 cache:', cacheErr);
+            console.warn("⚠️ Failed to read metadata hash 404 cache:", cacheErr);
           }
         }
 
@@ -812,207 +950,155 @@ export function MessageCard({
           attempts.add(normalizedMetadataHash);
 
           try {
-            const keccakRes = await fetch(`/api/metadata-mapping/by-metadata/${metadataHash}`, { cache: 'no-store' });
+            const keccakRes = await fetch(`/api/metadata-mapping/by-metadata/${metadataHashRaw}`, { cache: "no-store" });
             if (keccakRes.ok) {
               const data = await keccakRes.json();
               const fullCid = data?.record?.fullHash;
               if (fullCid) {
-                hashToFetch = fullCid;
-
-                // Cache for future loads (sender + receiver)
-                if (typeof window !== 'undefined') {
-                  try {
-                    window.localStorage.setItem(`metadata-cid-${id}`, fullCid);
-                  } catch (storageErr) {
-                    console.warn('⚠️ Failed to cache metadata CID:', storageErr);
-                  }
-                }
+                candidateCid = String(fullCid);
               }
             } else if (keccakRes.status === 404) {
-              console.info('ℹ️ Metadata hash not found in mapping yet (404). Falling back to alternate resolution.');
+              console.info("ℹ️ Metadata hash not found in mapping yet (404). Falling back to alternate resolution.");
 
-              if (typeof window !== 'undefined') {
+              if (typeof window !== "undefined") {
                 try {
-                  const cacheKey = `${missingMetadataHashCacheKeyPrefix}${normalizedMetadataHash}`;
+                  const cacheEntryKey = `${missingMetadataHashCacheKeyPrefix}${normalizedMetadataHash}`;
                   const cachePayload = {
                     ts: Date.now(),
-                    id: typeof id === 'bigint' ? id.toString() : id ?? null
+                    id: typeof id === "bigint" ? id.toString() : id ?? null
                   };
-                  window.localStorage.setItem(cacheKey, JSON.stringify(cachePayload));
+                  window.localStorage.setItem(cacheEntryKey, JSON.stringify(cachePayload));
                 } catch (cacheErr) {
-                  console.warn('⚠️ Failed to persist metadata hash 404 cache:', cacheErr);
+                  console.warn("⚠️ Failed to persist metadata hash 404 cache:", cacheErr);
                 }
               }
             } else {
-              console.warn('⚠️ Metadata hash resolution failed with status:', keccakRes.status);
+              console.warn("⚠️ Metadata hash resolution failed with status:", keccakRes.status);
             }
           } catch (err) {
-            console.warn('⚠️ Failed to resolve metadata hash via API:', err);
+            console.warn("⚠️ Failed to resolve metadata hash via API:", err);
           }
         } else {
-          console.debug('🔁 Metadata hash resolution already attempted for this message. Skipping direct lookup.');
+          console.debug("🔁 Metadata hash resolution already attempted for this message. Skipping direct lookup.");
         }
       }
-      
-      // Try to extract short hash from URI (e.g., ipfs://Qm.../F:abc123)
-      let shortHashFromUri: string | null = null;
-      if (uri.includes('F:')) {
-        const match = uri.match(/F:([a-zA-Z0-9]{6,8})/);
-        if (match) {
-          shortHashFromUri = match[1];
-        }
-      }
-      
-      // If metadata hash resolution failed but short hash is available, try to resolve
-      if (!hashToFetch && shortHashFromUri) {
+
+      if (!candidateCid && shortHashFromUri) {
         try {
-          const mappingRes = await fetch(`/api/metadata-mapping/${shortHashFromUri}`, { cache: 'no-store' });
+          const mappingRes = await fetch(`/api/metadata-mapping/${shortHashFromUri}`, { cache: "no-store" });
           if (mappingRes.ok) {
             const data = await mappingRes.json();
             const fullCid = data?.record?.fullHash;
             if (fullCid) {
-              hashToFetch = fullCid;
+              candidateCid = String(fullCid);
 
-              // If we only had short hash, enrich backend mapping with metadata keccak for future lookups
-              if (metadataHash && metadataHash !== zeroHash) {
+              if (hasMetadataHash) {
                 try {
-                  await fetch('/api/metadata-mapping', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
+                  await fetch("/api/metadata-mapping", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({
                       shortHash: shortHashFromUri,
                       fullHash: fullCid,
-                      metadataKeccak: metadataHash
+                      metadataKeccak: metadataHashRaw
                     })
                   });
                 } catch (persistErr) {
-                  console.warn('⚠️ Failed to persist metadata keccak for short hash mapping:', persistErr);
+                  console.warn("⚠️ Failed to persist metadata keccak for short hash mapping:", persistErr);
                 }
               }
             }
           }
         } catch (err) {
-          console.warn('⚠️ Failed to resolve short hash:', err);
+          console.warn("⚠️ Failed to resolve short hash:", err);
         }
       }
-      
-      // Fallback: use URI (will fetch encrypted payload, not ideal for preview)
-      if (!hashToFetch) {
-        hashToFetch = uri.replace('ipfs://', '');
+
+      if (!candidateCid) {
+        candidateCid = uri.replace(/^ipfs:\/\//i, "");
       }
-      
-      if (!hashToFetch || hashToFetch.length === 0) {
+
+      if (!candidateCid || candidateCid.length === 0 || candidateCid.toLowerCase().includes("stub")) {
         setPreviewMetadata(null);
         return;
       }
 
-      if (hashToFetch.includes('Stub') || hashToFetch.includes('stub')) {
-        setPreviewMetadata(null);
-        return;
-      }
+      const { normalized, mismatch } = await fetchAndValidateMetadata(candidateCid);
 
-      // Use server-side API to fetch metadata (avoids CORS issues)
-      let metadata: any = null;
-      try {
-        const response = await fetch(`/api/ipfs/${hashToFetch}`, { cache: 'no-store' });
-
-        if (!response.ok) {
-          throw new Error(`API returned ${response.status}`);
-        }
-
-        const contentType = response.headers.get('content-type') || '';
-        
-        // Only try to parse as JSON if content type suggests it
-        if (contentType.includes('application/json') || contentType.includes('text/')) {
+      if (normalized) {
+        applyNormalizedMetadata(normalized);
+        if (typeof window !== "undefined") {
           try {
-            metadata = await response.json();
-          } catch (jsonErr) {
-            metadata = null;
+            window.localStorage.setItem(metadataCidKey, candidateCid);
+          } catch (storageErr) {
+            console.warn("⚠️ Failed to cache metadata CID:", storageErr);
           }
-        } else {
-          metadata = null;
         }
-      } catch (err: any) {
-        console.warn('⚠️ API metadata fetch failed:', err.message);
+        return;
       }
 
-      if (!metadata) {
-        // Fallback: localStorage'dan gönderen tarafın kaydettiği bilgiyi kullan
-        const sentCache = typeof window !== 'undefined'
-          ? window.localStorage.getItem(`sent-preview-${id}`) ?? window.localStorage.getItem(`${cacheKey}-sent-preview-${id}`)
-          : null;
-        if (sentCache) {
-          try {
-            const parsed = JSON.parse(sentCache);
-            if (parsed.fileMetadata) {
-              setPreviewMetadata({
-                fileName: parsed.fileMetadata.fileName || '',
-                fileSize: BigInt(parsed.fileMetadata.fileSize || 0),
-                contentType: parsed.fileMetadata.mimeType || '',
-                previewImageHash: '',
-                thumbnail: parsed.fileMetadata.thumbnail || undefined,
-                dimensions: parsed.fileMetadata.dimensions || undefined,
-                hasAttachment: true,
-                previewText: typeof parsed.original === 'string' ? parsed.original : undefined
-              });
-              return;
+      if (mismatch && typeof window !== "undefined") {
+        window.localStorage.removeItem(metadataCidKey);
+      }
+
+      const sentCache = isSent && typeof window !== "undefined"
+        ? (() => {
+            const namespacedKey = `${cacheKey}-sent-preview-${id}`;
+            const cached = window.localStorage.getItem(namespacedKey);
+            if (!cached) {
+              window.localStorage.removeItem(`sent-preview-${id}`);
             }
-          } catch (e) {
-            console.warn('Failed to parse localStorage fallback:', e);
-          }
-        }
+            return cached;
+          })()
+        : null;
 
-        setPreviewMetadata(null);
-        return;
+      if (isSent && sentCache) {
+        try {
+          const parsed = JSON.parse(sentCache);
+          if (parsed.fileMetadata) {
+            const fallbackMime = typeof parsed.fileMetadata.mimeType === "string" ? parsed.fileMetadata.mimeType : "";
+            const isImageMime = fallbackMime.toLowerCase().startsWith("image/");
+            const fallbackThumbnail = isImageMime && typeof parsed.fileMetadata.thumbnail === "string"
+              ? parsed.fileMetadata.thumbnail
+              : undefined;
+            const fallbackDimensions = isImageMime && parsed.fileMetadata.dimensions && typeof parsed.fileMetadata.dimensions.width === "number" && typeof parsed.fileMetadata.dimensions.height === "number"
+              ? parsed.fileMetadata.dimensions
+              : undefined;
+            setPreviewMetadata({
+              fileName: parsed.fileMetadata.fileName || "",
+              fileSize: BigInt(parsed.fileMetadata.fileSize || 0),
+              contentType: fallbackMime,
+              previewImageHash: "",
+              thumbnail: fallbackThumbnail,
+              dimensions: fallbackDimensions,
+              hasAttachment: true,
+              previewText: typeof parsed.original === "string" ? parsed.original : undefined,
+              isImage: isImageMime
+            });
+            return;
+          }
+        } catch (e) {
+          console.warn("Failed to parse localStorage fallback:", e);
+        }
       }
 
-      const previewInfo = metadata.preview ?? {};
-      const attachmentInfo = metadata.attachment ?? {};
-      const hasAttachment = Boolean(metadata.hasAttachment ?? metadata.type === 'file');
-
-      const fileName = typeof previewInfo.fileName === 'string'
-        ? previewInfo.fileName
-        : typeof attachmentInfo.fileName === 'string'
-        ? attachmentInfo.fileName
-        : hasAttachment
-        ? 'Attachment'
-        : 'Text Message';
-
-      const sizeSource = previewInfo.fileSize ?? attachmentInfo.fileSize ?? metadata.length ?? attachmentInfo.size ?? previewInfo.size ?? 0;
-      const numericSize = typeof sizeSource === 'string' ? Number(sizeSource) : Number(sizeSource ?? 0);
-      const safeSize = Number.isFinite(numericSize) && numericSize > 0 ? numericSize : 0;
-      const fileSize = BigInt(Math.max(0, Math.floor(safeSize)));
-
-      const mimeType = typeof previewInfo.mimeType === 'string'
-        ? previewInfo.mimeType
-        : typeof attachmentInfo.mimeType === 'string'
-        ? attachmentInfo.mimeType
-        : metadata.type === 'text'
-        ? 'text/plain'
-        : 'application/octet-stream';
-
-      const dimensions = previewInfo.dimensions || attachmentInfo.dimensions;
-      const thumbnail = typeof previewInfo.thumbnail === 'string' ? previewInfo.thumbnail : undefined;
-      const previewImageHash = sanitizeIpfsValue(previewInfo.ipfsHash ?? attachmentInfo.ipfsHash);
-
-      setPreviewMetadata({
-        fileName,
-        fileSize,
-        contentType: mimeType,
-        previewImageHash: previewImageHash ?? '',
-        thumbnail,
-        dimensions,
-        hasAttachment,
-        previewText: typeof previewInfo.text === 'string' ? previewInfo.text : undefined
-      });
-
+      setPreviewMetadata(null);
     } catch (err) {
       console.warn("⚠️ Failed to fetch preview metadata", err);
       setPreviewMetadata(null);
     } finally {
       setIsLoadingPreviewMeta(false);
     }
-  }, [client, contractAddress, id]);
+  }, [
+    attemptedMetadataHashesRef,
+    cacheKey,
+    client,
+    contractAddress,
+    id,
+    userAddress,
+    missingMetadataHashCacheKeyPrefix,
+    missingMetadataHashRecheckMs
+  ]);
 
   // Preview metadata fetch et (mesaj card render edildiğinde)
   useEffect(() => {
@@ -1046,6 +1132,10 @@ export function MessageCard({
       return;
     }
 
+    if (!userAddress) {
+      return;
+    }
+
     let cancelled = false;
     let intervalId: number | undefined;
 
@@ -1056,7 +1146,7 @@ export function MessageCard({
       try {
         setIsLoadingPreview(true);
         setPreviewError(null);
-        const previewUrl = `/api/message-preview/${id.toString()}${buildChainQuery()}`;
+  const previewUrl = `/api/message-preview/${id.toString()}${buildChainQuery()}`;
         const res = await fetch(previewUrl, { cache: "no-store" });
         if (!res.ok) {
           if (res.status === 404) {
@@ -1069,10 +1159,40 @@ export function MessageCard({
             });
             return;
           }
+          if (res.status === 401 || res.status === 403) {
+            setPreviewError('Wallet not authorized to preview this message yet.');
+            setPreviewPollingDisabled(true);
+            return;
+          }
           throw new Error(`Preview fetch failed with status ${res.status}`);
         }
         const json = await res.json();
-        const candidate = (json?.record?.previewDataUrl ?? json?.previewDataUrl) as string | undefined;
+        const record = (json?.record ?? json) as {
+          previewDataUrl?: string;
+          fileName?: string | null;
+          mimeType?: string | null;
+        } | undefined;
+        const candidate = typeof record?.previewDataUrl === "string" ? record.previewDataUrl : undefined;
+        if (record && (record.fileName || record.mimeType)) {
+          setPreviewMetadata((current) => {
+            const normalizedMime = typeof record.mimeType === "string" ? record.mimeType : current?.contentType ?? "";
+            const lowerMime = normalizedMime.toLowerCase();
+            const mimeIsImage = lowerMime.startsWith("image/");
+
+            // Preserve existing metadata while filling gaps.
+            return {
+              fileName: record.fileName ?? current?.fileName ?? "",
+              fileSize: current?.fileSize ?? 0n,
+              contentType: normalizedMime,
+              previewImageHash: mimeIsImage ? current?.previewImageHash ?? "" : "",
+              thumbnail: mimeIsImage ? current?.thumbnail : undefined,
+              dimensions: mimeIsImage ? current?.dimensions : undefined,
+              hasAttachment: true,
+              previewText: current?.previewText,
+              isImage: current?.isImage ?? mimeIsImage
+            };
+          });
+        }
         if (!cancelled && candidate) {
           setPreviewDataUrl(candidate);
           setPreviewError(null);
@@ -1103,7 +1223,7 @@ export function MessageCard({
         clearInterval(intervalId);
       }
     };
-  }, [id, localUnlocked, isSent, previewDataUrl, previewPollingDisabled, buildChainQuery]);
+  }, [id, localUnlocked, isSent, previewDataUrl, previewPollingDisabled, buildChainQuery, userAddress]);
 
   const decryptCiphertext = useCallback(async (handleValue: unknown) => {
     let currentDecryptOptions: DecryptOptions | undefined;
@@ -1206,6 +1326,9 @@ export function MessageCard({
       }
       if (messageChainKey) {
         decryptRequestPayload.chainKey = messageChainKey;
+      }
+      if (userAddress) {
+        decryptRequestPayload.viewerAddress = userAddress;
       }
 
       const response = await fetch('/api/decrypt', {
@@ -1897,14 +2020,48 @@ export function MessageCard({
   const paymentSettled = hasPaymentCondition && outstandingPayment === 0n;
   const paymentReady = !paymentFlagIsSet || (paymentAmountResolved && paidAmountOnchain !== null);
   
-  // ✅ Sealedn kontrolü: on-chain unlocked veya client-side zaman dolmuş
+  // ✅ Time condition check: ONLY check client time, don't rely on onchainUnlocked for time
   const currentTimestamp = Math.floor(Date.now() / 1000);
   const unlockTimestamp = Number(unlockTime);
   const clientTimeReady = unlockTimestamp > 0 && currentTimestamp >= unlockTimestamp;
-  const timeReady = !hasTimeCondition || onchainUnlocked === true || clientTimeReady;
+  
+  // Time is ready if: NO time condition OR time has passed
+  // Don't use onchainUnlocked for time check (it can be true even if time not ready)
+  const timeReady = !hasTimeCondition || clientTimeReady;
+
+  const unlockMoment = useMemo(() => {
+    if (!metadataLoaded || !hasTimeCondition) {
+      return null;
+    }
+    if (!Number.isFinite(unlockTimestamp) || unlockTimestamp <= 0) {
+      return null;
+    }
+    const candidate = dayjs.unix(unlockTimestamp);
+    return candidate.isValid() ? candidate : null;
+  }, [metadataLoaded, hasTimeCondition, unlockTimestamp]);
+
+  const timeRequirementLabel = useMemo(() => {
+    if (!unlockMoment) {
+      return null;
+    }
+    const formatted = unlockMoment.format("YYYY-MM-DD HH:mm");
+    if (clientTimeReady) {
+      return `Time lock satisfied (${unlockMoment.fromNow()}).`;
+    }
+    return `Unlocks at ${formatted} (${unlockMoment.fromNow()}).`;
+  }, [unlockMoment, clientTimeReady]);
   
   const shouldAttachPayment = hasPaymentCondition && outstandingPayment > 0n;
-  const canPrepareRead = !!contractAddress && !!userAddress && !!chain?.id && !isSent && !messageContent && metadataLoaded && paymentReady && timeReady && !shouldAttachPayment;
+  const canPrepareRead =
+    !!contractAddress &&
+    !!userAddress &&
+    walletOnExpectedChain &&
+    !isSent &&
+    !messageContent &&
+    metadataLoaded &&
+    paymentReady &&
+    timeReady &&
+    !shouldAttachPayment;
   const paymentIsFree = !requiredPaymentAmount || requiredPaymentAmount === 0n;
   const paymentDisplay = metadataLoaded ? formatPaymentAmount(outstandingPayment, { includeUnit: true, zeroLabel: "0 ETH" }) : null;
   const paymentBadgeClass = metadataLoaded
@@ -1914,8 +2071,9 @@ export function MessageCard({
   const fallbackConditionMask = conditionType ?? 0;
   const fallbackHasTime = (fallbackConditionMask & 0x01) !== 0;
   const fallbackHasPayment = (fallbackConditionMask & 0x02) !== 0 && typeof requiredPayment === 'bigint' && requiredPayment > 0n;
-  const canUnlockWithPayment = shouldAttachPayment && !!contractAddress && !!userAddress && !!chain?.id && !isSent;
+  const canUnlockWithPayment = shouldAttachPayment && !!contractAddress && !!userAddress && walletOnExpectedChain && !isSent;
   const paymentValueToSend = canUnlockWithPayment ? outstandingPayment : undefined;
+
   const summaryPaymentBadgeValue =
     paymentDisplay ?? (metadataLoaded ? (paymentIsFree ? "0 ETH" : "Pending...") : "Loading...");
   const summaryPaymentDescription = metadataLoaded
@@ -1936,7 +2094,7 @@ export function MessageCard({
     args: [id],
     value: paymentValueToSend,
     enabled: Boolean(canUnlockWithPayment && outstandingPayment > 0n),
-    chainId: chain?.id,
+  chainId: activeChainId,
     account: userAddress as `0x${string}` | undefined
   });
 
@@ -1975,6 +2133,9 @@ export function MessageCard({
         setDecryptError("Please connect your wallet to unlock this message with a payment.");
       } else if (!contractAddress) {
         setDecryptError("Contract address is unavailable. Please refresh the page and try again.");
+      } else if (!walletOnExpectedChain) {
+        const expectedName = messageChainConfig?.name ?? "the correct network";
+        setDecryptError(`Please switch your wallet to ${expectedName} to unlock this message.`);
       } else if (!activeChainId) {
         setDecryptError("Active network could not be detected. Reconnect your wallet and retry.");
       } else {
@@ -2032,7 +2193,9 @@ export function MessageCard({
     id,
     userAddress,
     activeChainId,
-    isPaymentActionPending
+    isPaymentActionPending,
+    walletOnExpectedChain,
+    messageChainConfig?.name
   ]);
 
   useEffect(() => {
@@ -2106,15 +2269,58 @@ export function MessageCard({
   const fileNameLabel = previewMetadata?.fileName?.trim() ? previewMetadata.fileName.trim() : null;
   const fileSizeLabel = previewMetadata && previewMetadata.fileSize > 0n ? formatFileSize(previewMetadata.fileSize) : null;
   const contentTypeLabel = previewMetadata?.contentType?.trim() ? previewMetadata.contentType.trim() : null;
-  const previewImageUrl = previewMetadata?.previewImageHash ? `/api/ipfs/${previewMetadata.previewImageHash}` : null;
+  const previewMimeType = previewMetadata?.contentType?.trim().toLowerCase() ?? '';
+  const previewIsImage = previewMetadata?.isImage ?? previewMimeType.startsWith('image/');
+  const previewImageUrl = previewIsImage && previewMetadata?.previewImageHash
+    ? `/api/ipfs/${previewMetadata.previewImageHash}`
+    : null;
   const hasAnyPreviewInfo = Boolean(
     fileNameLabel ||
     fileSizeLabel ||
     contentTypeLabel ||
-    previewMetadata?.previewImageHash ||
-    previewDataUrl
+    (previewIsImage && (previewMetadata?.previewImageHash || previewDataUrl))
   );
+  const previewInfoNotice = previewIsImage
+  ? (localUnlocked
+    ? (isSent
+      ? "Receiver will see the high-resolution preview after opening the message."
+      : "High-resolution preview is available below once the message is opened.")
+    : (isSent
+      ? "Receiver will unlock the full resolution after the time or payment conditions are met."
+      : "Full resolution image will unlock after time/payment conditions are met."))
+  : (localUnlocked
+    ? (isSent
+      ? "Receiver can download the attachment after opening the message."
+      : "Attachment is ready to download once you open the message.")
+    : (isSent
+      ? "Receiver must meet the unlock conditions to download this attachment."
+      : "Complete the unlock conditions to access the attachment."));
+  const rawPreviewSnippet = (previewMetadata?.previewText ?? "").trim();
+  const previewSnippetAvailable = rawPreviewSnippet.length > 0;
+  const canRevealPreviewSnippet = previewSnippetAvailable && (localUnlocked || isSent);
+  const snippetHeadingLabel = canRevealPreviewSnippet
+    ? "Message snippet"
+    : isSent
+    ? "Message summary"
+    : "Encrypted summary";
+  const sentPreviewMime = typeof sentPreviewInfo?.fileMetadata?.mimeType === 'string'
+  ? sentPreviewInfo.fileMetadata.mimeType.toLowerCase()
+  : '';
+  const sentPreviewIsImage = sentPreviewMime.startsWith('image/');
   const showLoadingPreview = isLoadingPreview && !previewDataUrl && !previewMetadata;
+  const computedCreatedAt = useMemo(() => (typeof createdAt === 'bigint' ? createdAt : null), [createdAt]);
+  const sentDateLabel = useMemo(() => {
+    if (createdDate && createdDate.trim().length > 0) {
+      return createdDate.trim();
+    }
+    if (computedCreatedAt && computedCreatedAt > 0n) {
+      const seconds = Number(computedCreatedAt);
+      if (!Number.isNaN(seconds) && Number.isFinite(seconds) && seconds > 0) {
+        return dayjs.unix(seconds).format('YYYY-MM-DD HH:mm:ss');
+      }
+    }
+    return null;
+  }, [computedCreatedAt, createdDate]);
   const legacyAttachmentSummary = useMemo(() => {
     if (typeof window !== "undefined" && cacheKey) {
       try {
@@ -2189,9 +2395,43 @@ export function MessageCard({
         {summaryPaymentDescription}
       </div>
       <div
-        className="pt-2 border-t border-slate-800/60 space-y-2"
-        style={localUnlocked && localIsRead ? { display: "none" } : undefined}
+        className="pt-2 border-t border-slate-800/60 space-y-3"
+        style={!isSent && localUnlocked && localIsRead ? { display: "none" } : undefined}
       >
+        {previewSnippetAvailable ? (
+          <div className="space-y-2">
+            <div className="text-xs font-semibold text-slate-400 flex items-center gap-2">
+              <span>📝</span>
+              <span>{snippetHeadingLabel}</span>
+            </div>
+            <div
+              className={
+                localUnlocked
+                  ? "p-2 bg-slate-900/40 border border-slate-700/40 rounded"
+                  : "p-2 bg-slate-900/25 border border-slate-800/60 rounded"
+              }
+            >
+              {canRevealPreviewSnippet ? (
+                <p className="leading-relaxed text-sm text-slate-200/90 break-words">
+                  {rawPreviewSnippet}
+                </p>
+              ) : (
+                <p className="leading-relaxed text-sm text-slate-200/70 break-words">
+                  🔒 This summary is encrypted. Unlock the message to reveal it.
+                </p>
+              )}
+              {!localUnlocked && !isSent && (
+                <p className="mt-2 text-[11px] text-slate-400 flex items-start gap-1">
+                  <span>ℹ️</span>
+                  <span>
+                    The summary remains hidden for the receiver until the unlock conditions are satisfied.
+                  </span>
+                </p>
+              )}
+            </div>
+          </div>
+        ) : null}
+
         <div className="text-xs font-semibold text-slate-400 flex items-center gap-2">
           <span>📎</span>
           <span>Attachment Preview</span>
@@ -2203,7 +2443,7 @@ export function MessageCard({
           </p>
         ) : previewMetadata ? (
           <div className="space-y-3">
-            {previewMetadata.thumbnail && (
+            {previewIsImage && previewMetadata.thumbnail ? (
               <div className="flex items-center gap-3 p-2 bg-purple-900/10 rounded border border-purple-500/20">
                 <img
                   src={previewMetadata.thumbnail}
@@ -2219,9 +2459,9 @@ export function MessageCard({
                   </div>
                 </div>
               </div>
-            )}
+            ) : null}
 
-            {previewMetadata.previewText && localUnlocked && canShowUnlockedPreview && (
+            {previewMetadata.previewText && localUnlocked && canShowUnlockedPreview ? (
               <div className="p-2 bg-slate-900/40 border border-slate-700/40 rounded text-xs text-slate-200">
                 <div className="font-semibold text-slate-300 mb-1 flex items-center gap-1">
                   <span>📝</span>
@@ -2231,60 +2471,55 @@ export function MessageCard({
                   {previewMetadata.previewText}
                 </p>
               </div>
-            )}
+            ) : null}
 
-            {!localUnlocked && (
+            {!localUnlocked ? (
               <div className="p-2 bg-slate-900/20 border border-slate-700/40 rounded text-[11px] text-slate-300 flex items-start gap-2">
                 <span>🔒</span>
                 <span>{isSent ? "Receiver must complete the unlock conditions to reveal text." : "Message content remains encrypted. Complete the unlock conditions to reveal text."}</span>
               </div>
-            )}
-            {localUnlocked && !canShowUnlockedPreview && (
+            ) : null}
+
+            {localUnlocked && !canShowUnlockedPreview ? (
               <div className="p-2 bg-slate-900/20 border border-slate-700/40 rounded text-[11px] text-slate-300 flex items-start gap-2">
                 <span>🗝️</span>
                 <span>{isSent ? "Receiver can decrypt the message once unlock conditions are satisfied." : "Unlock conditions are satisfied. Select “Open Message” to decrypt and view the content."}</span>
               </div>
-            )}
+            ) : null}
 
             <div className="space-y-2 text-xs text-slate-300">
-              {previewMetadata.fileName && (
+              {previewMetadata.fileName ? (
                 <div className="flex items-start gap-2">
                   <span className="text-slate-500 min-w-[70px]">📝 File:</span>
                   <span className="break-all font-mono text-purple-200">{previewMetadata.fileName}</span>
                 </div>
-              )}
-              {previewMetadata.fileSize > 0n && (
+              ) : null}
+              {previewMetadata.fileSize > 0n ? (
                 <div className="flex items-start gap-2">
                   <span className="text-slate-500 min-w-[70px]">💾 Size:</span>
                   <span className="text-purple-200">{formatFileSize(previewMetadata.fileSize)}</span>
                 </div>
-              )}
-              {previewMetadata.dimensions && (
+              ) : null}
+              {previewIsImage && previewMetadata.dimensions ? (
                 <div className="flex items-start gap-2">
                   <span className="text-slate-500 min-w-[70px]">📐 Original:</span>
                   <span className="text-purple-200">{previewMetadata.dimensions.width} × {previewMetadata.dimensions.height} pixels</span>
                 </div>
-              )}
-              {previewMetadata.contentType && (
+              ) : null}
+              {previewMetadata.contentType ? (
                 <div className="flex items-start gap-2">
                   <span className="text-slate-500 min-w-[70px]">🔖 Type:</span>
                   <span className="text-purple-200">{previewMetadata.contentType}</span>
                 </div>
-              )}
+              ) : null}
             </div>
 
-            <div className="p-2 bg-blue-900/20 border border-blue-500/30 rounded text-[11px] text-blue-200 flex items-start gap-2">
-              <span className="text-blue-400">ℹ️</span>
-              <span>
-                {localUnlocked
-                  ? (isSent
-                      ? "Receiver will see the high-resolution preview after opening the message."
-                      : "High-resolution preview is available below once the message is opened.")
-                  : (isSent
-                      ? "Receiver will unlock the full resolution after the time or payment conditions are met."
-                      : "Full resolution image will unlock after time/payment conditions are met.")}
-              </span>
-            </div>
+            {(localUnlocked || isSent) ? (
+              <div className="p-2 bg-blue-900/20 border border-blue-500/30 rounded text-[11px] text-blue-200 flex items-start gap-2">
+                <span className="text-blue-400">ℹ️</span>
+                <span>{previewInfoNotice}</span>
+              </div>
+            ) : null}
           </div>
         ) : hasAnyPreviewInfo ? (
           <div className="space-y-2 text-sm text-slate-300">
@@ -2300,13 +2535,13 @@ export function MessageCard({
                 <span>{fileSizeLabel}</span>
               </div>
             )}
-            {contentTypeLabel && (
+            {contentTypeLabel ? (
               <div className="flex items-start gap-2">
                 <span className="text-slate-500 min-w-[70px]">Type:</span>
                 <span className="break-all">{contentTypeLabel}</span>
               </div>
-            )}
-            {(previewImageUrl || previewDataUrl) && (
+            ) : null}
+            {localUnlocked && previewIsImage && (previewImageUrl || previewDataUrl) && (
               <div className="pt-2 border-t border-slate-800/60">
                 <p className="text-xs text-slate-500 mb-2 flex items-center gap-1">
                   <span>🖼️</span>
@@ -2349,7 +2584,7 @@ export function MessageCard({
     args: [id],
     // Sealedn kilidi açılmışsa veya ödeme gereği varsa (ve miktar biliniyorsa) hazırlansın
     enabled: canPrepareRead,
-    chainId: chain?.id,
+    chainId: activeChainId,
     account: userAddress as `0x${string}` | undefined,
   });
   
@@ -2420,6 +2655,24 @@ export function MessageCard({
     const fetchContentAfterPayment = async () => {
   if (!isPaymentSuccess || !client || !userAddress || !contractAddress) return;
       
+      // DEBUG: Log all conditions
+      console.log(`[Payment Success] Message ${id}:`, {
+        isPaymentSuccess,
+        hasTimeCondition,
+        timeReady,
+        clientTimeReady,
+        unlockTimestamp: Number(unlockTime),
+        currentTimestamp: Math.floor(Date.now() / 1000),
+        willUnlock: !hasTimeCondition || timeReady
+      });
+      
+      // ⚠️ CRITICAL: Check time condition before auto-unlock
+      // If time condition exists and not ready, don't auto-unlock
+      if (hasTimeCondition && !timeReady) {
+        console.log("⏰ Payment completed but time condition not satisfied yet. Waiting for unlock time...");
+        return;
+      }
+      
       setIsLoadingContent(true);
       setDecryptError(null);
       setLocalUnlocked(true);
@@ -2463,7 +2716,7 @@ export function MessageCard({
     };
 
     fetchContentAfterPayment();
-  }, [isPaymentSuccess, client, id, onMessageRead, userAddress, contractAddress, decryptCiphertext, ensureOnchainUnlocked]);
+  }, [isPaymentSuccess, client, id, onMessageRead, userAddress, contractAddress, decryptCiphertext, ensureOnchainUnlocked, hasTimeCondition, timeReady]);
 
   const handleReadClick = async () => {
     if (isSent) {
@@ -2611,27 +2864,31 @@ export function MessageCard({
       const updateTimer = () => {
         const now = Math.floor(Date.now() / 1000);
         const diff = Number(unlockTime) - now;
-        
+
         if (diff <= 0) {
-          setTimeLeft("0");
+          setTimeLeft("0s");
           return;
         }
 
         const duration = dayjs.duration(diff, 'seconds');
-        const days = Math.floor(duration.asDays());
-        const hours = duration.hours();
-        const minutes = duration.minutes();
+        const minutes = Math.floor(duration.asMinutes());
         const seconds = duration.seconds();
+        const hours = Math.floor(duration.asHours());
+        const days = Math.floor(duration.asDays());
 
         if (days > 0) {
-          setTimeLeft(`${days}d ${hours}h ${minutes}m`);
-        } else if (hours > 0) {
-          setTimeLeft(`${hours}h ${minutes}m ${seconds}s`);
-        } else if (minutes > 0) {
-          setTimeLeft(`${minutes}m ${seconds}s`);
-        } else {
-          setTimeLeft(`${seconds}s`);
+          const remHours = hours - days * 24;
+          setTimeLeft(`${days}d ${remHours}h`);
+          return;
         }
+
+        if (hours > 0) {
+          const remMinutes = minutes - hours * 60;
+          setTimeLeft(`${hours}h ${remMinutes}m`);
+          return;
+        }
+
+        setTimeLeft(`${minutes}m ${seconds}s`);
       };
 
       updateTimer();
@@ -2776,7 +3033,7 @@ export function MessageCard({
                 </div>
                 
                 {/* Thumbnail preview if available */}
-                {sentPreviewInfo.fileMetadata.thumbnail && (
+                {sentPreviewIsImage && sentPreviewInfo.fileMetadata.thumbnail && (
                   <div className="flex items-center gap-3">
                     <img
                       src={sentPreviewInfo.fileMetadata.thumbnail}
@@ -2802,12 +3059,10 @@ export function MessageCard({
                   {typeof sentPreviewInfo.fileMetadata.fileSize === 'number' && sentPreviewInfo.fileMetadata.fileSize > 0 && (
                     <div className="flex items-start gap-2">
                       <span className="text-purple-400/70 min-w-[70px]">Size:</span>
-                      <span>
-                        {(sentPreviewInfo.fileMetadata.fileSize / 1024 / 1024).toFixed(2)} MB
-                      </span>
+                      <span>{formatFileSize(BigInt(Math.max(0, Math.floor(sentPreviewInfo.fileMetadata.fileSize))))}</span>
                     </div>
                   )}
-                  {sentPreviewInfo.fileMetadata.dimensions && (
+                  {sentPreviewIsImage && sentPreviewInfo.fileMetadata.dimensions && (
                     <div className="flex items-start gap-2">
                       <span className="text-purple-400/70 min-w-[70px]">Dimensions:</span>
                       <span>{sentPreviewInfo.fileMetadata.dimensions.width} × {sentPreviewInfo.fileMetadata.dimensions.height}</span>
@@ -2834,6 +3089,12 @@ export function MessageCard({
         )}
         
         <div className="border-t border-slate-700/50 pt-3">
+          {sentDateLabel && (
+            <div className="flex items-center justify-between text-sm pb-2">
+              <span className="text-slate-400">Sent:</span>
+              <span className="text-slate-300">{sentDateLabel}</span>
+            </div>
+          )}
           <div className="flex items-center justify-between text-sm">
             <span className="text-slate-400">Lock:</span>
             <span className="text-slate-300">{unlockDate}</span>
@@ -2925,6 +3186,11 @@ export function MessageCard({
           <div className="mb-4 space-y-2">
             {shouldAttachPayment ? (
               <>
+                {!timeReady && !isSent && timeRequirementLabel && (
+                  <div className="hidden text-xs text-slate-200 flex items-center gap-2 justify-center font-mono">
+                    
+                  </div>
+                )}
                 <button
                   onClick={handlePaymentClick}
                   disabled={isPaymentActionPending || !canSubmitPayment}
@@ -2951,44 +3217,58 @@ export function MessageCard({
                 )}
               </>
             ) : (
-              <button
-                onClick={() => {
-                  if (readMessage && timeReady && paymentReady) {
-                    readMessage();
-                  } else {
-                    handleReadClick();
-                  }
-                }}
-                disabled={isReading || isConfirming || !encryptionReady}
-                className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 
-                  text-white font-semibold transition-all transform hover:scale-[1.02]
-                  disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100
-                  flex items-center justify-center gap-2 shadow-lg"
-              >
-                {isReading || isConfirming ? (
-                  <>
-                    <span className="animate-spin">⟳</span>
-                    {isReading ? "Preparing..." : "Awaiting confirmation..."}
-                  </>
-                ) : !metadataLoaded ? (
-                  <>
-                    <span className="animate-pulse">⏳</span>
-                    Loading metadata...
-                  </>
-                ) : !timeReady ? (
-                  <>
+              <div className="space-y-2">
+                {!timeReady && !isSent && timeRequirementLabel && (
+                  <div className="text-xs text-slate-200 flex items-center gap-2 justify-center font-mono">
                     <span>⏳</span>
-                    Time lock still active
-                  </>
-                ) : (
-                  <>
-                    <span>🔓</span>
-                    {paymentRequirementLabel
-                      ? `Open Message (${paymentRequirementLabel})`
-                      : "Open Message"}
-                  </>
+                    <span>Time left: <CountdownTimer /></span>
+                  </div>
                 )}
-              </button>
+                <button
+                  onClick={() => {
+                    if (readMessage && timeReady && paymentReady) {
+                      readMessage();
+                    } else {
+                      handleReadClick();
+                    }
+                  }}
+                  disabled={isReading || isConfirming || !encryptionReady || !timeReady}
+                  className="w-full px-4 py-3 rounded-lg bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 
+                    text-white font-semibold transition-all transform hover:scale-[1.02]
+                    disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100
+                    flex items-center justify-center gap-2 shadow-lg"
+                >
+                  {isReading || isConfirming ? (
+                    <>
+                      <span className="animate-spin">⟳</span>
+                      {isReading ? "Preparing..." : "Awaiting confirmation..."}
+                    </>
+                  ) : !metadataLoaded ? (
+                    <>
+                      <span className="animate-pulse">⏳</span>
+                      Loading metadata...
+                    </>
+                  ) : !timeReady ? (
+                    <>
+                      <span>⏳</span>
+                      Time lock still active
+                    </>
+                  ) : (
+                    <>
+                      <span>🔓</span>
+                      {paymentRequirementLabel
+                        ? `Open Message (${paymentRequirementLabel})`
+                        : "Open Message"}
+                    </>
+                  )}
+                </button>
+              </div>
+            )}
+            {timeRequirementLabel && (
+              <p className="text-xs text-slate-300 flex items-start gap-2 mt-2">
+                <span>⏳</span>
+                <span>{timeRequirementLabel}</span>
+              </p>
             )}
             {(decryptError || preparePaymentError) && (
               <p className="text-xs text-red-400">

@@ -232,6 +232,13 @@ contract SealedMessage {
     {
         Message storage message = _messages[messageId];
         if (!message.exists) revert MessageNotFound();
+        
+        // ✅ CRITICAL SECURITY: Only sender or receiver can read message details
+        // This prevents unauthorized access to encrypted data
+        require(
+            msg.sender == message.sender || msg.sender == message.receiver,
+            "Only sender or receiver can access message"
+        );
 
         return (
             message.sender,
@@ -279,10 +286,13 @@ contract SealedMessage {
         bool timeOk = (message.conditionMask & CONDITION_TIME) == 0 || block.timestamp >= message.unlockTime;
         bool paymentOk = (message.conditionMask & CONDITION_PAYMENT) == 0 || message.paidAmount >= message.requiredPayment;
 
-        if ((message.conditionMask & CONDITION_TIME) != 0 && (message.conditionMask & CONDITION_PAYMENT) != 0) {
-            return timeOk || paymentOk;
-        }
+        // ✅ CRITICAL FIX: When BOTH conditions exist, BOTH must be satisfied (AND not OR)
+        // Time + Payment: Both time must be reached AND payment must be made
+        // if ((message.conditionMask & CONDITION_TIME) != 0 && (message.conditionMask & CONDITION_PAYMENT) != 0) {
+        //     return timeOk || paymentOk;  // ❌ OLD BUGGY CODE: OR logic allowed early unlock
+        // }
 
+        // ✅ Correct logic: ALL active conditions must be satisfied
         return timeOk && paymentOk;
     }
 

@@ -11,6 +11,7 @@ import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { appConfig } from "../lib/env";
 import { useContractAddress, useHasContract } from "../lib/useContractAddress";
 import { MessageCard } from "./MessageCard";
+import { supportedChains, type ChainKey } from "../lib/chains";
 
 dayjs.extend(relativeTime);
 dayjs.extend(advancedFormat);
@@ -32,7 +33,8 @@ interface MessageViewModel {
   isRead: boolean;
   isSent: boolean;
   contractAddress?: string; // ✅ Hangi contract'tan geldiği
-  timestamp?: bigint; // Mesajın gönderilme zamanı
+  createdAt?: bigint; // Mesajın gönderilme zamanı
+  createdDate?: string | null;
   transactionHash?: string; // İşlem hash'i (mesaj gönderilirken)
   // V3 ödeme bilgileri
   requiredPayment?: bigint;
@@ -46,94 +48,14 @@ interface MessageViewModel {
     size: number;
     type: string;
   };
+  chainId?: number;
+  chainKey?: ChainKey;
 }
 
 interface Toast {
   id: number;
   message: string;
   type: 'success' | 'info' | 'warning';
-}
-
-async function fetchMessage(
-  client: PublicClient,
-  contractAddress: `0x${string}`,
-  contractAbi: any, // Type union çok karmaşık, any kullan
-  id: bigint,
-  userAddress: string,
-  account?: `0x${string}`,
-  isV3?: boolean // V3 contract mu?
-): Promise<MessageViewModel | null> {
-  try {
-    // getMessage() ile full message data al
-    const messageData = await client.readContract({
-      address: contractAddress,
-      abi: contractAbi,
-      functionName: "getMessage",
-      args: [id]
-    }) as any;
-
-    // getMessageFinancialView() ile financial data al
-    const financialData = await client.readContract({
-      address: contractAddress,
-      abi: contractAbi,
-      functionName: "getMessageFinancialView",
-      args: [id]
-    }) as any;
-
-    // Parse message data (struct)
-    const sender = messageData.sender || messageData[0];
-    const receiver = messageData.receiver || messageData[1];
-    const createdAt = messageData.createdAt || messageData[8];
-    const revoked = messageData.revoked || messageData[9];
-
-    // Parse financial data (struct)
-    const unlockTime = financialData.unlockTime || 0n;
-    const requiredPayment = financialData.requiredPayment || 0n;
-    const paidAmount = financialData.paidAmount || 0n;
-    const conditionMask = financialData.conditionMask || 0;
-    const isUnlocked = financialData.isUnlocked || false;
-
-    const now = BigInt(Math.floor(Date.now() / 1000));
-    const unlocked = isUnlocked;
-    const isSent = sender.toLowerCase() === userAddress.toLowerCase();
-
-    let content: string | null = null;
-    if (unlocked && !isSent) {
-      content = "[Click to read message]";
-    }
-
-    // Tarih formatlaması
-    const unlockDate = dayjs(Number(unlockTime) * 1000);
-    const relative = unlocked ? "Opened" : unlockDate.fromNow();
-
-    return {
-      id,
-      sender,
-      receiver,
-      unlockTime,
-      unlockDate: unlockDate.format("DD MMM YYYY HH:mm"),
-      relative,
-      unlocked,
-      content,
-      isRead: false, // SealedMessage'da isRead yok
-      isSent,
-      timestamp: createdAt,
-      requiredPayment,
-      paidAmount,
-      conditionType: conditionMask,
-      contentType: undefined,
-      fileMetadata: undefined
-    };
-  } catch (err: any) {
-    // Authorization hatası durumunda null dön (bu mesaj kullanıcıya ait değil)
-    if (err.message?.includes("Not authorized")) {
-      console.warn(`Mesaj #${id} için yetki yok, atlaniyor...`);
-      return null;
-    }
-    // Diğer hatalar için throw et
-    console.error(`❌ fetchMessage error for #${id}:`, err);
-    throw err;
-  }
 }
 
 // Transaction hash'lerini event log'larından çek
@@ -242,9 +164,18 @@ export function MessageList({ refreshKey }: MessageListProps) {
   const { chain } = useNetwork();
   const contractAddress = useContractAddress();
   const hasContract = useHasContract();
-  
-  // Artık sadece Sealed kullanıyoruz
-  const isSealedContract = true;
+  const activeChainId = chain?.id;
+  const activeChainKey = useMemo<ChainKey | undefined>(() => {
+    if (!chain?.id) {
+      return undefined;
+    }
+    for (const [key, config] of Object.entries(supportedChains)) {
+      if (config.id === chain.id) {
+        return key as ChainKey;
+      }
+    }
+    return undefined;
+  }, [chain?.id]);
   
   // Sealed ABI kullan
   const contractAbi = sealedMessageAbi;
@@ -255,7 +186,6 @@ export function MessageList({ refreshKey }: MessageListProps) {
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [mounted, setMounted] = useState(false);
   const [toasts, setToasts] = useState<Toast[]>([]);
-  const [unlockedMessageIds, setUnlockedMessageIds] = useState<Set<string>>(new Set());
   const [filter, setFilter] = useState<'all' | 'unread' | 'unlocked' | 'locked' | 'paid' | 'unpaid' | 'pending' | 'files'>('all');
   const [hiddenMessages, setHiddenMessages] = useState<Set<string>>(() => {
     // Load from localStorage on mount
@@ -271,6 +201,10 @@ export function MessageList({ refreshKey }: MessageListProps) {
     }
     return new Set();
   });
+  const PAGE_SIZE = 5;
+  const [cursor, setCursor] = useState<bigint | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
   const AUTO_REFRESH_SECONDS = 300;
   const [autoRefreshSecondsLeft, setAutoRefreshSecondsLeft] = useState<number>(AUTO_REFRESH_SECONDS);
   const autoRefreshLabel = useMemo(() => {
@@ -299,114 +233,212 @@ export function MessageList({ refreshKey }: MessageListProps) {
     }, 5000);
   }, []);
 
-  const loadMessages = useCallback(async () => {
+  const fetchMessagesChunk = useCallback(async (startFrom: bigint, limit: number) => {
+    if (!client || !contractAddress || !userAddress) {
+      return { messages: [] as MessageViewModel[], nextCursor: -1n };
+    }
+
+    if (startFrom < 0n) {
+      return { messages: [] as MessageViewModel[], nextCursor: -1n };
+    }
+
+    const results: MessageViewModel[] = [];
+    let currentIndex = startFrom;
+    const lowerUser = userAddress.toLowerCase();
+
+    while (currentIndex >= 0n && results.length < limit) {
+      const messageId = currentIndex;
+
+      try {
+        const [messageData, financialData] = await Promise.all([
+          client.readContract({
+            address: contractAddress,
+            abi: contractAbi as any,
+            functionName: "getMessage",
+            args: [messageId],
+            account: userAddress as `0x${string}`
+          }),
+          client.readContract({
+            address: contractAddress,
+            abi: contractAbi as any,
+            functionName: "getMessageFinancialView",
+            args: [messageId],
+            account: userAddress as `0x${string}`
+          })
+        ]) as [any, any];
+
+        const sender = (messageData.sender || messageData[0] || "") as string;
+        const receiver = (messageData.receiver || messageData[1] || "") as string;
+
+        if (!sender || !receiver) {
+          currentIndex = messageId > 0n ? messageId - 1n : -1n;
+          continue;
+        }
+
+        const isSender = sender.toLowerCase() === lowerUser;
+        const isReceiver = receiver.toLowerCase() === lowerUser;
+
+        if (!isSender && !isReceiver) {
+          currentIndex = messageId > 0n ? messageId - 1n : -1n;
+          continue;
+        }
+
+        const unlockTimeRaw = financialData.unlockTime ?? 0n;
+        const unlockTime = typeof unlockTimeRaw === "bigint" ? unlockTimeRaw : BigInt(unlockTimeRaw || 0);
+        const requiredPayment = financialData.requiredPayment != null ? BigInt(financialData.requiredPayment) : 0n;
+        const paidAmount = financialData.paidAmount != null ? BigInt(financialData.paidAmount) : 0n;
+        const conditionMask = typeof financialData.conditionMask === "number"
+          ? financialData.conditionMask
+          : Number(financialData.conditionMask ?? 0);
+        const contractIsUnlocked = Boolean(financialData.isUnlocked);
+        const hasPaymentCondition = (conditionMask & 0x02) !== 0;
+        const paymentSatisfied = !hasPaymentCondition || paidAmount >= requiredPayment;
+
+        const createdAtRaw = messageData.createdAt ?? messageData[13] ?? null;
+        let createdAt: bigint | undefined;
+        if (typeof createdAtRaw === "bigint") {
+          createdAt = createdAtRaw;
+        } else if (createdAtRaw != null) {
+          try {
+            createdAt = BigInt(createdAtRaw);
+          } catch {
+            createdAt = undefined;
+          }
+        }
+
+        const createdDate = createdAt && createdAt > 0n
+          ? dayjs.unix(Number(createdAt)).format("YYYY-MM-DD HH:mm:ss")
+          : null;
+
+        const unlockDateLabel = dayjs.unix(Number(unlockTime)).format("YYYY-MM-DD HH:mm:ss");
+        const relative = dayjs.unix(Number(unlockTime)).fromNow();
+
+        results.push({
+          id: messageId,
+          sender,
+          receiver,
+          unlockTime,
+          unlockDate: unlockDateLabel,
+          relative,
+          unlocked: contractIsUnlocked && paymentSatisfied,
+          content: "[Encrypted message 🔐]",
+          isRead: false,
+          isSent: isSender,
+          contractAddress,
+          createdAt,
+          createdDate,
+          requiredPayment,
+          paidAmount,
+          conditionType: conditionMask,
+          contentType: 2,
+          chainId: activeChainId,
+          chainKey: activeChainKey
+        });
+      } catch (err: any) {
+        const message = err?.message ?? "";
+        const shortMessage = err?.shortMessage ?? "";
+        if (
+          message.includes("Only sender or receiver") ||
+          shortMessage.includes("Only sender or receiver") ||
+          message.includes("Not authorized")
+        ) {
+          // Skip unauthorized messages
+        } else {
+          console.warn(`⚠️ Couldn't load message ${messageId.toString()}:`, err);
+        }
+      }
+
+      currentIndex = messageId > 0n ? messageId - 1n : -1n;
+    }
+
+    return { messages: results, nextCursor: currentIndex };
+  }, [client, contractAddress, userAddress, contractAbi, activeChainId, activeChainKey]);
+
+  const loadInitialMessages = useCallback(async () => {
     if (!client || !hasContract || !contractAddress || !userAddress) {
       return;
     }
 
     setLoading(true);
     setError(null);
-    setAutoRefreshSecondsLeft(AUTO_REFRESH_SECONDS);
 
     try {
-      // SealedMessage contract için tek yükleme stratejisi
-      if (isSealedContract) {
-        // SealedMessage contract: messageCount ile iterate et
-        try {
-          const messageCountResult = await client.readContract({
-            address: contractAddress,
-            abi: contractAbi as any,
-            functionName: "messageCount",
-            args: []
-          });
-          
-          const messageCount = Number(messageCountResult);
-          
-          const allMessages: MessageViewModel[] = [];
-          
-          // Her mesajın metadata'sını yükle
-          for (let i = 0; i < messageCount; i++) {
-            try {
-              // getMessage() ile full data al
-              const messageData = await client.readContract({
-                address: contractAddress,
-                abi: contractAbi as any,
-                functionName: "getMessage",
-                args: [BigInt(i)]
-              }) as any;
+      const messageCountResult = await client.readContract({
+        address: contractAddress,
+        abi: contractAbi as any,
+        functionName: "messageCount",
+        args: []
+      });
 
-              // getMessageFinancialView() ile financial data al
-              const financialData = await client.readContract({
-                address: contractAddress,
-                abi: contractAbi as any,
-                functionName: "getMessageFinancialView",
-                args: [BigInt(i)]
-              }) as any;
+      const total = Number(messageCountResult ?? 0);
+      const startIndex = total > 0 ? BigInt(total - 1) : -1n;
+      const { messages, nextCursor } = await fetchMessagesChunk(startIndex, PAGE_SIZE);
 
-              // Parse data
-              const sender = messageData.sender || messageData[0];
-              const receiver = messageData.receiver || messageData[1];
-              const unlockTime = financialData.unlockTime || 0n;
-              const isUnlocked = financialData.isUnlocked || false;
-              const conditionMask = financialData.conditionMask || 0;
-              const requiredPayment = financialData.requiredPayment || 0n;
-              
-              // Kullanıcının gönderdiği VEYA aldığı mesajları filtrele
-              const isSender = sender.toLowerCase() === userAddress.toLowerCase();
-              const isReceiver = receiver.toLowerCase() === userAddress.toLowerCase();
-              
-              if (isSender || isReceiver) {
-                allMessages.push({
-                  id: BigInt(i),
-                  sender: sender,
-                  receiver: receiver,
-                  unlockTime: unlockTime,
-                  unlockDate: dayjs.unix(Number(unlockTime)).format('YYYY-MM-DD HH:mm:ss'),
-                  unlocked: isUnlocked,
-                  isRead: false,
-                  isSent: isSender,
-                  contractAddress: contractAddress,
-                  conditionType: conditionMask,
-                  requiredPayment: requiredPayment,
-                  contentType: 2, // ENCRYPTED
-                  relative: dayjs.unix(Number(unlockTime)).fromNow(),
-                  content: "[Encrypted message 🔐]"
-                });
-              }
-            } catch (err) {
-              console.warn(`⚠️ Couldn't load message ${i}:`, err);
-            }
-          }
-          
-          setItems(allMessages);
-          setLastUpdated(new Date());
-          setAutoRefreshSecondsLeft(AUTO_REFRESH_SECONDS);
-        } catch (err) {
-          console.error('❌ Error loading messages:', err);
-          setError('Failed to load messages');
-        }
-        setLoading(false);
-        return; // EXIT early - don't run V2/V3.2 code
-      }
-      
-  // V3.2 / V2 contract için artık destek yok - sadece SealedMessage
-      setItems([]);
+      setItems(messages.sort((a, b) => Number(b.id) - Number(a.id)));
+      setCursor(nextCursor);
+      setHasMore(nextCursor >= 0n);
       setLastUpdated(new Date());
-      setLoading(false);
-
-    } catch (err: any) {
-      console.error("MessageList error:", err);
-      setError(`Error: ${err.message || "An error occurred while loading messages"}. Please refresh the page.`);
+      setAutoRefreshSecondsLeft(AUTO_REFRESH_SECONDS);
+    } catch (err) {
+      console.error('❌ Error loading messages:', err);
+      setError('Failed to load messages');
+      setItems([]);
+      setCursor(-1n);
+      setHasMore(false);
     } finally {
       setLoading(false);
+      setIsLoadingMore(false);
     }
-  }, [client, hasContract, contractAddress, userAddress, unlockedMessageIds, showToast, AUTO_REFRESH_SECONDS]);
+  }, [client, hasContract, contractAddress, userAddress, contractAbi, fetchMessagesChunk, PAGE_SIZE, AUTO_REFRESH_SECONDS]);
+
+  const loadOlderMessages = useCallback(async () => {
+    if (!client || !hasContract || !contractAddress || !userAddress) {
+      return;
+    }
+
+    const startFrom = cursor ?? -1n;
+    if (startFrom < 0n) {
+      setHasMore(false);
+      return;
+    }
+
+    setIsLoadingMore(true);
+    setError(null);
+
+    try {
+      const { messages, nextCursor } = await fetchMessagesChunk(startFrom, PAGE_SIZE);
+
+      if (messages.length > 0) {
+        setItems((previous) => {
+          const merged = [...previous];
+          messages.forEach((msg) => {
+            const existingIndex = merged.findIndex((item) => item.id === msg.id);
+            if (existingIndex >= 0) {
+              merged[existingIndex] = msg;
+            } else {
+              merged.push(msg);
+            }
+          });
+          merged.sort((a, b) => Number(b.id) - Number(a.id));
+          return merged;
+        });
+      }
+
+      setCursor(nextCursor);
+      setHasMore(nextCursor >= 0n);
+    } catch (err) {
+      console.error('❌ Error loading older messages:', err);
+      setError('Failed to load older messages');
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }, [client, hasContract, contractAddress, userAddress, cursor, fetchMessagesChunk, PAGE_SIZE]);
 
   useEffect(() => {
     if (mounted && client && hasContract && contractAddress && userAddress) {
-      loadMessages();
+      loadInitialMessages();
     }
-  }, [refreshKey, mounted, client, hasContract, contractAddress, userAddress, loadMessages]);
+  }, [refreshKey, mounted, client, hasContract, contractAddress, userAddress, loadInitialMessages]);
 
   useEffect(() => {
     if (!mounted || !client || !hasContract || !contractAddress || !userAddress) {
@@ -416,7 +448,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
     const intervalId = window.setInterval(() => {
       setAutoRefreshSecondsLeft((prev) => {
         if (prev <= 1) {
-          void loadMessages();
+          void loadInitialMessages();
           return AUTO_REFRESH_SECONDS;
         }
         return prev - 1;
@@ -426,7 +458,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
     return () => {
       clearInterval(intervalId);
     };
-  }, [mounted, client, hasContract, contractAddress, userAddress, loadMessages, AUTO_REFRESH_SECONDS]);
+  }, [mounted, client, hasContract, contractAddress, userAddress, loadInitialMessages, AUTO_REFRESH_SECONDS]);
 
   if (!mounted) {
     return (
@@ -499,7 +531,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
         </div>
         <div className="flex gap-2">
           <button
-            onClick={loadMessages}
+            onClick={loadInitialMessages}
             disabled={loading}
             className="
               rounded-lg border border-aurora/40 bg-aurora/10 px-4 py-2 text-sm text-aurora 
@@ -518,7 +550,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
               const msgKeys = keys.filter(k => k.includes('-msg-') || k.startsWith('msg-'));
               msgKeys.forEach(k => localStorage.removeItem(k));
               showToast(`🗑️ ${msgKeys.length} cache entry cleared`, 'success');
-              setTimeout(() => loadMessages(), 500);
+              setTimeout(() => loadInitialMessages(), 500);
             }}
             className="
               rounded-lg border border-red-500/40 bg-red-900/20 px-4 py-2 text-sm text-red-300 
@@ -582,8 +614,9 @@ export function MessageList({ refreshKey }: MessageListProps) {
           <p>No messages yet.</p>
         </div>
       ) : (
-        <div className="grid gap-4 md:grid-cols-2">
-          {items
+        <>
+          <div className="grid gap-4 md:grid-cols-2">
+            {items
             .filter((item) => {
               // Filter by hidden status
               if (hiddenMessages.has(item.id.toString())) return false;
@@ -646,9 +679,13 @@ export function MessageList({ refreshKey }: MessageListProps) {
                 requiredPayment={item.requiredPayment}
                 paidAmount={item.paidAmount}
                 conditionType={item.conditionType}
+                createdAt={item.createdAt}
+                createdDate={item.createdDate ?? null}
                 transactionHash={item.transactionHash}
                 paymentTxHash={item.paymentTxHash}
                 contentType={item.contentType}
+                chainId={item.chainId}
+                chainKey={item.chainKey}
                 onHide={() => {
                   const newHidden = new Set(hiddenMessages);
                   newHidden.add(item.id.toString());
@@ -660,7 +697,20 @@ export function MessageList({ refreshKey }: MessageListProps) {
               />
             );
           })}
-        </div>
+          </div>
+
+          {hasMore ? (
+            <div className="flex justify-center">
+              <button
+                onClick={loadOlderMessages}
+                disabled={isLoadingMore}
+                className="mt-4 rounded-lg border border-slate-700 bg-slate-800 px-4 py-2 text-sm text-slate-200 transition hover:bg-slate-700 disabled:opacity-60"
+              >
+                {isLoadingMore ? "Loading older messages..." : "Load older messages"}
+              </button>
+            </div>
+          ) : null}
+        </>
       )}
     </section>
   );

@@ -26,6 +26,7 @@ const DEFAULT_RECEIVER = "" as const;
 const EUINT256_BYTE_CAP = 32;
 const utf8Encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : undefined;
 const ZERO_BYTES32 = ("0x" + "00".repeat(32)) as `0x${string}`;
+const MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024; // 1 MB sınırı
 
 type EncryptedPayload = {
   uri: string;
@@ -129,6 +130,17 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const publicClient = usePublicClient();
   const contractAddress = useContractAddress();
   const hasContract = useHasContract();
+  const cacheKey = useMemo(() => {
+    if (!contractAddress) {
+      return null;
+    }
+    const prefix = contractAddress.slice(0, 10).toLowerCase();
+    const chainId = chain?.id;
+    const chainSuffix = typeof chainId === "number" && Number.isFinite(chainId)
+      ? `-${chainId}`
+      : "";
+    return `${prefix}-msg${chainSuffix}`;
+  }, [contractAddress, chain?.id]);
   
   // AES-256-GCM only - No version switching needed
   const isSealedContract = true; // Her zaman Sealed kullan
@@ -137,9 +149,12 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [receiver, setReceiver] = useState<string>(DEFAULT_RECEIVER);
   const [content, setContent] = useState("");
   const [unlockMode, setUnlockMode] = useState<"preset" | "custom">("preset");
-  const [presetDuration, setPresetDuration] = useState<number>(300); // 5 dakika varsayılan
+  const [presetDuration, setPresetDuration] = useState<number>(30); // 30 saniye varsayılan
   const [unlock, setUnlock] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
+  
+  // ⏰ Time condition (optional)
+  const [timeConditionEnabled, setTimeConditionEnabled] = useState(true); // Default enabled
   
   // 💰 Payment koşulu (isteğe bağlı)
   const [paymentAmount, setPaymentAmount] = useState<string>(""); // Wei cinsinden (internal)
@@ -189,7 +204,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       dimensions?: { width: number; height: number } | null;
     } | null;
   } | null>(null);
-  const [plannedUnlockTimestamp, setPlannedUnlockTimestamp] = useState<number>(() => Math.floor(Date.now() / 1000) + 300);
+  const [plannedUnlockTimestamp, setPlannedUnlockTimestamp] = useState<number>(() => Math.floor(Date.now() / 1000) + 30); // 30 saniye default
   
   // AES-256-GCM state
   const [encryptedData, setEncryptedData] = useState<EncryptedPayload | null>(null);
@@ -500,7 +515,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       }
       resolvedShortHash = shortHash;
 
-      const notePreview = content.trim();
+      const sanitizedNote = content.trim();
       const fileData = {
         type: "file",
         version: 1,
@@ -514,7 +529,8 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           dimensions: attachmentMetadata?.dimensions ?? null
         },
         preview: {
-          text: notePreview ? notePreview.slice(0, 160) : null,
+          text: null,
+          encrypted: true,
           fileName: attachedFile.name,
           fileSize: attachedFile.size,
           mimeType: attachedFile.type,
@@ -545,7 +561,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       lastSentPreviewRef.current = {
         payload: dataToEncrypt,
         truncated: false,
-        original: content.trim() || attachedFile?.name || null,
+        original: sanitizedNote || attachedFile?.name || null,
         fileMetadata: {
           fileName: attachedFile.name,
           fileSize: attachedFile.size,
@@ -579,7 +595,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           hasAttachment: false,
           length: plainBytes.length,
           preview: {
-            text: plainText.slice(0, 160)
+            encrypted: true
           },
           createdAt: new Date().toISOString()
         };
@@ -806,14 +822,20 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       : true;
 
     // Base validations - NO encryption check (will encrypt on submit)
+    // Time validation only required if time condition is enabled
+    const timeValid = !timeConditionEnabled || (plannedUnlockTimestamp > nowSeconds && customValid);
+    
+    // At least one condition must be enabled (time or payment)
+    const hasCondition = timeConditionEnabled || paymentEnabled;
+    
     valid = isConnected &&
       !!receiver &&
       isAddress(receiver) &&
       receiver.toLowerCase() !== userAddress?.toLowerCase() &&
       (content.trim().length > 0 || ipfsHash.length > 0) && // Mesaj VEYA dosya olmalı
       isReceiverKeyValid &&
-      plannedUnlockTimestamp > nowSeconds &&
-      customValid;
+      timeValid &&
+      hasCondition; // En az bir koşul olmalı
     
     setIsFormValid(valid);
   }, [
@@ -826,7 +848,9 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     plannedUnlockTimestamp,
     unlockMode,
     unlock,
-    selectedTimezone
+    selectedTimezone,
+    timeConditionEnabled,
+    paymentEnabled
   ]);
   
   const generateAttachmentPreview = useCallback((file: File): Promise<string | null> => {
@@ -870,49 +894,64 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
-    
-    // Dosya boyutu kontrolü (max 25MB - güvenlik için düşürüldü)
-    const maxSize = 25 * 1024 * 1024; // 25MB
-    if (file.size > maxSize) {
-      setError(`❌ Dosya çok büyük! Maksimum: 25MB (Seçilen: ${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+
+    // Dosya boyutu kontrolü (max 1MB)
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setError(`❌ Dosya çok büyük! Maksimum: 1MB (Seçilen: ${(file.size / 1024 / 1024).toFixed(2)}MB)`);
       return;
     }
-    
+
     // GÜVENLİK: Desteklenen dosya tipleri (beyaz liste)
-    const allowedTypes = {
+    const allowedTypes: Record<string, string[]> = {
       // Resimler
-      'image/png': '.png',
-      'image/jpeg': '.jpg/.jpeg',
-      'image/gif': '.gif',
-      'image/webp': '.webp',
-      'image/svg+xml': '.svg',
-      // Dökümanlar
-      'application/pdf': '.pdf',
-      'text/plain': '.txt',
-      // Arşivler (izin verildi)
-      'application/zip': '.zip',
-      'application/x-rar-compressed': '.rar',
-      'application/x-7z-compressed': '.7z',
+      "image/png": [".png"],
+      "image/jpeg": [".jpg", ".jpeg"],
+      "image/gif": [".gif"],
+      "image/webp": [".webp"],
+      "image/svg+xml": [".svg"],
+      // Dokümanlar
+      "application/pdf": [".pdf"],
+      "application/msword": [".doc"],
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
+      "application/vnd.ms-excel": [".xls"],
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": [".xlsx"],
+      "application/vnd.ms-powerpoint": [".ppt"],
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
+      "text/plain": [".txt", ".log"],
+      "application/json": [".json"],
+      // Arşivler
+      "application/zip": [".zip"],
+      "application/x-zip-compressed": [".zip"],
+      "application/x-rar-compressed": [".rar"],
+      "application/vnd.rar": [".rar"],
+      "application/x-7z-compressed": [".7z"],
       // Video (küçük boyutlar için)
-      'video/mp4': '.mp4',
-      'video/webm': '.webm'
-      // NOT: APK kaldırıldı (güvenlik riski)
+      "video/mp4": [".mp4"],
+      "video/webm": [".webm"]
+      // NOT: Yürütülebilir formatlar güvenlik nedeniyle hariç tutuldu
     };
-    
+
     // GÜVENLİK: Dosya uzantısı ve MIME type kontrolü
-    const fileExtension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || '';
-    const isTypeAllowed = Object.keys(allowedTypes).includes(file.type);
-    
-    if (!isTypeAllowed) {
-      const allowedFormats = Object.values(allowedTypes).join(', ');
+    const fileExtension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+    const extensionWhitelist = new Set<string>();
+    for (const extList of Object.values(allowedTypes)) {
+      for (const ext of extList) {
+        extensionWhitelist.add(ext);
+      }
+    }
+
+    const mimeExtensions = allowedTypes[file.type] ?? null;
+    const isExtensionAllowed = fileExtension ? extensionWhitelist.has(fileExtension) : false;
+
+    if (!mimeExtensions && !isExtensionAllowed) {
+      const allowedFormats = Array.from(extensionWhitelist).sort().join(", ");
       setError(`❌ Desteklenmeyen dosya tipi!\n\n✅ İzin verilen formatlar:\n${allowedFormats}\n\n⚠️ Güvenlik nedeniyle sadece bu formatlar kabul edilir.`);
       return;
     }
-    
+
     // Uzantı doğrulaması (MIME type spoofing önlemi)
-    const expectedExt = allowedTypes[file.type as keyof typeof allowedTypes];
-    if (expectedExt && !expectedExt.split('/').some(ext => fileExtension === ext)) {
-      setError(`⚠️ Dosya uzantısı (${fileExtension}) dosya tipi ile uyuşmuyor! Olası güvenlik riski.`);
+    if (mimeExtensions && fileExtension && !mimeExtensions.includes(fileExtension)) {
+      setError(`⚠️ Dosya uzantısı (${fileExtension}) ile MIME tipi (${file.type || "bilinmiyor"}) uyuşmuyor! Olası güvenlik riski.`);
       return;
     }
     
@@ -1107,11 +1146,25 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   // Prepare contract write with proper parameters
   const basePrepareReady = isFormValid && !!contractAddress;
   const preparedUnlockTime = useMemo(() => {
-    if (txUnlockTime == null) {
-      return null;
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    
+    // If time condition is disabled, use current time (payment-only message)
+    if (!timeConditionEnabled) {
+      return nowSeconds;
     }
-    return computeSafeUnlockTime(chainTimestamp, txUnlockTime, { includeWallClock: false });
-  }, [chainTimestamp, txUnlockTime]);
+    
+    // If time condition enabled, use txUnlockTime if available, otherwise use plannedUnlockTimestamp
+    const timeToUse = txUnlockTime !== null ? txUnlockTime : plannedUnlockTimestamp;
+    
+    const computed = computeSafeUnlockTime(chainTimestamp, timeToUse, { includeWallClock: false });
+    
+    // If computed time is in past or very near future, use current time
+    if (computed <= nowSeconds + 60) {
+      return nowSeconds;
+    }
+    
+    return computed;
+  }, [timeConditionEnabled, chainTimestamp, txUnlockTime, plannedUnlockTimestamp]);
 
   const hasEncryptionPayload = useMemo(() => {
     if (!encryptedData) return false;
@@ -1133,10 +1186,27 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   // Calculate mask: 0x01=time, 0x02=payment, 0x03=both
   const conditionMask = useMemo(() => {
     let mask = 0;
-    if (preparedUnlockTime && preparedUnlockTime > 0) mask |= 0x01; // Time condition
-    if (paymentEnabled && paymentAmount && BigInt(paymentAmount) > 0n) mask |= 0x02; // Payment condition
-    return mask > 0 ? mask : 0x01; // Default to time-only if nothing selected
-  }, [preparedUnlockTime, paymentEnabled, paymentAmount]);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    
+    // Time condition: Checkbox enabled AND time is in future
+    if (timeConditionEnabled && preparedUnlockTime && preparedUnlockTime > nowSeconds + 60) {
+      mask |= 0x01; // Time condition active
+    }
+    
+    // Payment condition: Checkbox enabled and amount > 0
+    if (paymentEnabled && paymentAmount && BigInt(paymentAmount) > 0n) {
+      mask |= 0x02; // Payment condition active
+    }
+    
+    // If no conditions selected (shouldn't happen due to validation), default to time-only
+    // Otherwise return the actual mask (0x01=time, 0x02=payment, 0x03=both)
+    if (mask === 0) {
+      console.warn("⚠️ No conditions selected, defaulting to time-only");
+      return 0x01;
+    }
+    
+    return mask;
+  }, [timeConditionEnabled, preparedUnlockTime, paymentEnabled, paymentAmount]);
   
   // Sealed Contract Write - AES-256-GCM encrypted with payment support
   const { config: configSealed, error: prepareError } = usePrepareContractWrite({
@@ -1286,8 +1356,9 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       try {
         const previewPayload = lastSentPreviewRef.current;
         if (previewPayload && resolvedMessageId) {
-          // Use consistent key format that MessageCard expects: sent-preview-{id}
-          const storageKey = `sent-preview-${resolvedMessageId}`;
+          const storageKey = cacheKey
+            ? `${cacheKey}-sent-preview-${resolvedMessageId}`
+            : `sent-preview-${resolvedMessageId}`;
           const payloadToStore = {
             payload: previewPayload.payload,
             truncated: previewPayload.truncated,
@@ -1307,6 +1378,9 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           if (contractAddress) {
             const legacyKey = `${contractAddress.slice(0, 10)}-msg-sent-preview-${resolvedMessageId}`;
             localStorage.setItem(legacyKey, serialized);
+          }
+          if (cacheKey) {
+            localStorage.removeItem(`sent-preview-${resolvedMessageId}`);
           }
         }
       } catch (err) {
@@ -1367,6 +1441,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     publicClient,
     data?.hash,
     contractAddress,
+    cacheKey,
     attachedFile,
     onSubmitted
   ]);
@@ -1400,31 +1475,41 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       return;
     }
     
+    // At least one condition must be selected
+    if (!timeConditionEnabled && !paymentEnabled) {
+      setError("❌ Please enable at least one unlock condition (Time or Payment).");
+      return;
+    }
+    
     const nowSeconds = Math.floor(Date.now() / 1000);
-    let desiredUnlock = plannedUnlockTimestamp;
+    let desiredUnlock = nowSeconds; // Default to current time (for payment-only)
 
-    if (unlockMode === "preset") {
-      desiredUnlock = nowSeconds + presetDuration;
-      setPlannedUnlockTimestamp(desiredUnlock);
-    } else {
-      try {
-        const parsed = dayjs.tz(unlock, selectedTimezone);
-        if (!parsed.isValid()) {
+    // Only process time if time condition is enabled
+    if (timeConditionEnabled) {
+      if (unlockMode === "preset") {
+        desiredUnlock = nowSeconds + presetDuration;
+        setPlannedUnlockTimestamp(desiredUnlock);
+      } else {
+        try {
+          const parsed = dayjs.tz(unlock, selectedTimezone);
+          if (!parsed.isValid()) {
+            setError("Please select a valid date.");
+            return;
+          }
+          desiredUnlock = parsed.unix();
+          setPlannedUnlockTimestamp(desiredUnlock);
+        } catch (err) {
+          console.warn("Invalid custom date", err);
           setError("Please select a valid date.");
           return;
         }
-        desiredUnlock = parsed.unix();
-        setPlannedUnlockTimestamp(desiredUnlock);
-      } catch (err) {
-        console.warn("Invalid custom date", err);
-        setError("Please select a valid date.");
+      }
+
+      // Validate future time only if time condition is enabled
+      if (desiredUnlock <= nowSeconds) {
+        setError("Unlock time must be in the future.");
         return;
       }
-    }
-
-    if (desiredUnlock <= nowSeconds) {
-      setError("Unlock time must be in the future.");
-      return;
     }
 
     setError(null);
@@ -1447,7 +1532,14 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         }
       }
 
-      const safeUnlockForTx = computeSafeUnlockTime(latestChainTimestamp ?? chainTimestamp, desiredUnlock);
+      // Calculate safe unlock time based on whether time condition is enabled
+      let safeUnlockForTx: number;
+      if (timeConditionEnabled) {
+        safeUnlockForTx = computeSafeUnlockTime(latestChainTimestamp ?? chainTimestamp, desiredUnlock);
+      } else {
+        // Payment-only: Use current time (no time lock)
+        safeUnlockForTx = Math.floor(Date.now() / 1000);
+      }
       setTxUnlockTime(safeUnlockForTx);
 
       // Initialize encryption if not already initialized
@@ -1683,7 +1775,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                     Receiver hasn&apos;t registered yet. Using deterministic fallback key derived from their address.
                   </p>
                   <p className="text-xs text-amber-300/80 mt-2">
-                    💡 Receiver can decrypt this message by connecting to the DApp (no registration needed first time)
+                    💡 Message stays fully encrypted with Sealed's fallback key. Ask the receiver to connect once and register their key for stronger forward secrecy.
                   </p>
                 </div>
               </>
@@ -1710,7 +1802,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           <input
             ref={fileInputRef}
             type="file"
-            accept="image/*,application/pdf,text/plain,application/zip,application/x-rar-compressed,application/x-7z-compressed,video/mp4,video/webm"
+            accept="image/*,application/pdf,text/plain,.log,application/json,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/zip,application/x-zip-compressed,application/x-rar-compressed,application/vnd.rar,application/x-7z-compressed,video/mp4,video/webm"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -1760,18 +1852,28 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         <p className="text-xs text-text-light/60">
           {attachedFile 
             ? "📎 The attached file is uploaded to IPFS and recorded on-chain with your message."
-            : "💡 Optional: You can add an image, PDF, video, or APK attachment (max 50MB)."
+            : "💡 Optional: You can add an image, document, archive, or small video attachment (max 1 MB)."
           }
         </p>
       </div>
       
       {/* Condition Type Selection - Tab Buttons */}
       <div className="flex flex-col">
-        <label className="text-sm font-semibold uppercase tracking-wide text-text-light/80 mb-3">
-          Unlock Time
-        </label>
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            type="checkbox"
+            id="timeConditionEnabled"
+            checked={timeConditionEnabled}
+            onChange={(e) => setTimeConditionEnabled(e.target.checked)}
+            className="h-4 w-4 rounded border-cyber-blue/40 bg-midnight/60 text-green-500 focus:ring-2 focus:ring-green-500/60"
+          />
+          <label htmlFor="timeConditionEnabled" className="text-sm font-semibold uppercase tracking-wide text-text-light/80">
+            ⏰ Unlock Time (Optional)
+          </label>
+        </div>
         
         {/* Unlock Time Form */}
+        {timeConditionEnabled && (
         <div className="rounded-lg border-2 border-neon-green bg-neon-green/10 p-4">
           <div className="flex flex-col gap-3">
             {/* Mode Selection */}
@@ -1928,8 +2030,9 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             </div>
           </div>
         )}
+          </div>
         </div>
-      </div>
+        )}
       </div>
       
       {/* 💰 Payment Condition (Optional) */}

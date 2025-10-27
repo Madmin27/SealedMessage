@@ -7,8 +7,62 @@ import { RainbowKitProvider, midnightTheme, connectorsForWallets } from "@rainbo
 import { injectedWallet, metaMaskWallet } from "@rainbow-me/rainbowkit/wallets";
 import "@rainbow-me/rainbowkit/styles.css";
 import { defineChain } from "viem";
-import { supportedChains } from "../lib/chains";
+import { supportedChains, type ChainDefinition } from "../lib/chains";
 import { VersionProvider } from "./VersionProvider";
+
+type ChainEntry = {
+  key: string;
+  config: ChainDefinition;
+  defaultRpc: string;
+  publicRpc: string;
+};
+
+const sanitizeChainKey = (key: string) => key.replace(/[^a-zA-Z0-9]/g, "_").toUpperCase();
+
+const primaryChainKey = process.env.NEXT_PUBLIC_CHAIN_KEY?.trim();
+const primaryRpcOverride = process.env.NEXT_PUBLIC_RPC_URL?.trim();
+
+const readOverrideForChain = (chainKey: string): string | undefined => {
+  const baseKey = sanitizeChainKey(chainKey);
+  const explicitKey = `${baseKey}_RPC_URL`;
+  const publicKey = `NEXT_PUBLIC_${baseKey}_RPC_URL`;
+
+  const explicitOverride = process.env[explicitKey as keyof typeof process.env];
+  if (typeof explicitOverride === "string" && explicitOverride.trim().length > 0) {
+    return explicitOverride.trim();
+  }
+
+  const publicOverride = process.env[publicKey as keyof typeof process.env];
+  if (typeof publicOverride === "string" && publicOverride.trim().length > 0) {
+    return publicOverride.trim();
+  }
+
+  if (primaryChainKey && primaryRpcOverride && primaryChainKey === chainKey) {
+    return primaryRpcOverride;
+  }
+
+  return undefined;
+};
+
+const chainEntries: ChainEntry[] = Object.entries(supportedChains)
+  .filter(([, config]) => config.testnet)
+  .map(([key, config]) => {
+    const override = readOverrideForChain(key);
+    const resolvedDefault = override ?? config.rpcUrls.default;
+    const resolvedPublic = override ?? config.rpcUrls.public ?? config.rpcUrls.default;
+
+    return {
+      key,
+      config,
+      defaultRpc: resolvedDefault,
+      publicRpc: resolvedPublic
+    };
+  });
+
+const chainMetaById = new Map<number, ChainEntry>();
+for (const entry of chainEntries) {
+  chainMetaById.set(entry.config.id, entry);
+}
 
 export function Providers({ children }: PropsWithChildren) {
   const [mounted, setMounted] = useState(false);
@@ -16,38 +70,38 @@ export function Providers({ children }: PropsWithChildren) {
   useEffect(() => {
     setMounted(true);
   }, []);
-  // Convert supportedChains to wagmi chain format
-  const chains = Object.values(supportedChains)
-    .filter(c => c.testnet) // Only testnets for now
-    .map(chainConfig =>
-      defineChain({
-        id: chainConfig.id,
-        name: chainConfig.name,
-        network: chainConfig.network,
-        nativeCurrency: chainConfig.nativeCurrency,
-        rpcUrls: {
-          default: { http: [chainConfig.rpcUrls.default] },
-          public: { http: [chainConfig.rpcUrls.public || chainConfig.rpcUrls.default] }
-        },
-        blockExplorers: chainConfig.blockExplorer
-          ? {
-              default: {
-                name: "Explorer",
-                url: chainConfig.blockExplorer
-              }
+  const chains = chainEntries.map(({ config, defaultRpc, publicRpc }) =>
+    defineChain({
+      id: config.id,
+      name: config.name,
+      network: config.network,
+      nativeCurrency: config.nativeCurrency,
+      rpcUrls: {
+        default: { http: [defaultRpc] },
+        public: { http: [publicRpc] }
+      },
+      blockExplorers: config.blockExplorer
+        ? {
+            default: {
+              name: "Explorer",
+              url: config.blockExplorer
             }
-          : undefined,
-        testnet: chainConfig.testnet
-      })
-    );
+          }
+        : undefined,
+      testnet: config.testnet
+    })
+  );
 
   const { publicClient, webSocketPublicClient } = configureChains(
     chains,
     [
       jsonRpcProvider({
         rpc: (chain) => {
-          const chainConfig = Object.values(supportedChains).find(c => c.id === chain.id);
-          return { http: chainConfig?.rpcUrls.default || chain.rpcUrls.default.http[0] };
+          const entry = chainMetaById.get(chain.id);
+          if (!entry) {
+            return null;
+          }
+          return { http: entry.defaultRpc };
         }
       })
     ]

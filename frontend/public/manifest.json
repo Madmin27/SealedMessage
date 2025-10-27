@@ -1,8 +1,8 @@
 {
   "name": "SealedMessage",
   "description": "Time-locked encrypted messages on Base. Send messages that can only be read after a specific time.",
-  "icon": "https://sealedmessage.app/icon.png",
-  "url": "https://sealedmessage.app",
+  "icon": "https://sealed.minen.com.tr/icon.png",
+  "url": "https://sealed.minen.com.tr",
   "networks": [
     {
       "chainId": "eip155:84532",
@@ -16,13 +16,41 @@
   "version": "1.0.0",
   "author": {
     "name": "SealedMessage Team",
-    "url": "https://sealedmessage.app"
+    "url": "https://sealed.minen.com.tr"
   },
   "social": {
-    "github": "https://github.com/Madmin27/zamamessage"
+    "github": "https://github.com/Madmin27/sealedmessage"
   },
   "categories": ["social", "messaging", "privacy"],
   "screenshots": [
-    "https://sealedmessage.app/screenshot.png"
-  ]
+    "https://sealed.minen.com.tr/screenshot.png"
+  ],
+  "accountAssociation": {
+    "header": "eyJmaWQiOjU5OTY2NywidHlwZSI6ImN1c3RvZHkiLCJrZXkiOiIweDU1QTA3NzNlMDhERjU5MmJCZjBEMDZjNmYxZDVDQzU0YjA5MWY5NkMifQ",
+    "payload": "eyJkb21haW4iOiJ6YW1hLm1pbmVuLmNvbS50ciJ9",
+    "signature": "MHg2ODA5MmIxMDE1ZWI1MDVhOGJkZDlhZjQyMzAwNmNmYTFjZjQ4YjAzMTJkNTgzNjYzZWQ4MTcyZjM0YzdiMDUxM2E5OTU0NTg4MzVjNDE0MDlkY2Q5NDFiYmI0OTNjNjQ0ZjFkNWRjNzUzZTA3NTM2ODRkNTJhM2MwZGM4MjUxODFj"
+  },
+  "miniapp": {
+    "version": "1",
+    "name": "SealedMessage",
+    "homeUrl": "https://sealed.minen.com.tr",
+    "iconUrl": "https://sealed.minen.com.tr/icon.png",
+    "splashImageUrl": "https://sealed.minen.com.tr/icon.png",
+    "splashBackgroundColor": "#0f172a",
+    "subtitle": "Time-locked messages",
+    "description": "Send encrypted messages that can only be read after a specific time. Built on Base blockchain with privacy in mind.",
+    "screenshotUrls": [],
+    "primaryCategory": "social",
+    "tags": ["messaging", "privacy", "blockchain", "base", "timelock"],
+    "heroImageUrl": "https://sealed.minen.com.tr/preview.png",
+    "tagline": "Messages unlock with time",
+    "ogTitle": "SealedMessage",
+    "ogDescription": "Send encrypted messages that unlock at a specific time on Base blockchain",
+    "ogImageUrl": "https://sealed.minen.com.tr/preview.png",
+    "noindex": false,
+    "requiredChains": ["eip155:84532", "eip155:11155111"]
+  },
+  "baseBuilder": {
+    "ownerAddress": "0xbF7Ca51aD0f96B6a80bdD6E14432b9F4D798e9e3"
+  }
 }

@@ -1,12 +1,12 @@
 "use client";
 
 import { useNetwork, useSwitchNetwork } from 'wagmi';
-import { supportedChains, type ChainKey } from '../lib/chains';
+import { supportedChains } from '../lib/chains';
 import { useState, useRef, useEffect } from 'react';
 
 export function NetworkSwitcher() {
   const { chain } = useNetwork();
-  const { switchNetwork, isLoading } = useSwitchNetwork();
+  const { switchNetwork, switchNetworkAsync, isLoading } = useSwitchNetwork();
   const [isOpen, setIsOpen] = useState(false);
   const [showAll, setShowAll] = useState(false);
   const [mounted, setMounted] = useState(false);
@@ -92,29 +92,60 @@ export function NetworkSwitcher() {
             {displayChains.map(([key, chainConfig]) => {
               const isActive = chain?.id === chainConfig.id;
               const hasContract = chainConfig.contractAddress !== '0x0000000000000000000000000000000000000000';
-              const isDeployed = hasContract; // Kontrat deploy edilmiş mi?
-              const canSwitch = switchNetwork && isDeployed && !isActive;
+              const targetChainId = chainConfig.id;
 
               return (
                 <button
                   key={key}
                   onClick={() => {
-                    if (canSwitch) {
-                      switchNetwork(chainConfig.id);
-                      setIsOpen(false);
-                    } else if (!isDeployed) {
-                      console.warn('⚠️ Contract not deployed on this network');
-                    } else {
-                      console.warn('⚠️ Cannot switch:', { isActive, hasSwitchNetwork: !!switchNetwork });
+                    if (isActive) {
+                      return;
                     }
+
+                    const attemptSwitch = async () => {
+                      if (switchNetwork) {
+                        switchNetwork(targetChainId);
+                        return;
+                      }
+
+                      if (switchNetworkAsync) {
+                        try {
+                          await switchNetworkAsync(targetChainId);
+                          return;
+                        } catch (err) {
+                          console.warn('⚠️ switchNetworkAsync failed', err);
+                        }
+                      }
+
+                      const ethereum = typeof window !== 'undefined' ? (window as any).ethereum : undefined;
+                      if (ethereum?.request) {
+                        try {
+                          await ethereum.request({
+                            method: 'wallet_switchEthereumChain',
+                            params: [{ chainId: `0x${targetChainId.toString(16)}` }]
+                          });
+                          return;
+                        } catch (err) {
+                          console.warn('⚠️ Wallet refused to switch networks', err);
+                        }
+                      }
+
+                      console.warn('⚠️ Cannot switch:', {
+                        isActive,
+                        hasSwitchNetwork: !!switchNetwork,
+                        hasFallback: Boolean(ethereum?.request)
+                      });
+                    };
+
+                    void attemptSwitch().finally(() => {
+                      setIsOpen(false);
+                    });
                   }}
-                  disabled={isActive || isLoading || !isDeployed}
+                  disabled={isActive || isLoading}
                   className={`flex w-full items-center justify-between rounded-lg border p-3 mb-2 text-left transition ${
                     isActive
                       ? 'border-green-500 bg-green-900/30 shadow-md shadow-green-500/20'
-                      : isDeployed
-                      ? 'border-aurora/50 bg-slate-800/80 hover:border-aurora hover:bg-slate-800 hover:shadow-lg hover:shadow-aurora/10 cursor-pointer'
-                      : 'cursor-not-allowed border-slate-800/50 bg-slate-900/20 opacity-40'
+                      : 'border-aurora/50 bg-slate-800/80 hover:border-aurora hover:bg-slate-800 hover:shadow-lg hover:shadow-aurora/10 cursor-pointer'
                   }`}
                 >
                   <div className="flex-1">
@@ -122,7 +153,7 @@ export function NetworkSwitcher() {
                       <span className={`font-semibold ${
                         isActive 
                           ? 'text-green-200' 
-                          : isDeployed 
+                          : hasContract 
                           ? 'text-slate-100' 
                           : 'text-slate-500'
                       }`}>
@@ -131,19 +162,19 @@ export function NetworkSwitcher() {
                       {isActive && (
                         <span className="text-green-400">✓</span>
                       )}
-                      {isDeployed && !isActive && (
+                      {hasContract && !isActive && (
                         <span className="text-aurora text-xs">●</span>
                       )}
                     </div>
                     
                     <div className="mt-1 flex items-center gap-2 flex-wrap">
-                      <span className={`text-xs ${isDeployed ? 'text-slate-400' : 'text-slate-600'}`}>
+                      <span className={`text-xs ${hasContract ? 'text-slate-400' : 'text-slate-600'}`}>
                         {chainConfig.nativeCurrency.symbol}
                       </span>
                       
                       {chainConfig.testnet && (
                         <span className={`rounded px-1.5 py-0.5 text-xs ${
-                          isDeployed 
+                          hasContract 
                             ? 'bg-yellow-900/30 text-yellow-400' 
                             : 'bg-slate-800/30 text-slate-600'
                         }`}>
@@ -151,14 +182,14 @@ export function NetworkSwitcher() {
                         </span>
                       )}
                       
-                      {isDeployed ? (
+                      {hasContract ? (
                         <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-xs text-green-400 flex items-center gap-1">
                           <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-400"></span>
                           Deployed
                         </span>
                       ) : (
-                        <span className="rounded bg-slate-800/30 px-1.5 py-0.5 text-xs text-slate-600">
-                          🚧 Coming Soon
+                        <span className="rounded bg-slate-800/30 px-1.5 py-0.5 text-xs text-slate-400">
+                          🚧 Contract not deployed yet
                         </span>
                       )}
                     </div>
