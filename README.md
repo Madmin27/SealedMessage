@@ -2,6 +2,10 @@
 
 SealedMessage is a privacy-focused messaging dApp that allows creators to lock their content behind time and payment conditions on Ethereum Sepolia. Senders encrypt payloads locally, publish the ciphertext to IPFS, and attach the commitment to an on-chain escrow contract. Receivers unlock the message once the smart contract verifies that the configured release condition is met.
 
+https://sealed.minen.com.tr/
+
+https://youtu.be/MdFKtYHHOCI
+
 ## Core Features
 - **Conditional unlocking**: Messages can require a completed payment, a future timestamp, or both before decryption is permitted.
 - **Wallet-native UX**: The Next.js frontend integrates with wagmi/viem so users interact with MetaMask and other EVM wallets without custom extensions.
