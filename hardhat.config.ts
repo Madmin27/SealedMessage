@@ -166,7 +166,11 @@ const config: HardhatUserConfig = {
   defaultNetwork: "hardhat",
   networks,
   etherscan: {
-    apiKey: process.env.ETHERSCAN_API_KEY ?? "",
+    apiKey: {
+      sepolia: process.env.ETHERSCAN_API_KEY ?? "",
+      baseSepolia: process.env.BASESCAN_API_KEY ?? "",
+      scrollSepolia: process.env.SCROLLSCAN_API_KEY ?? ""
+    },
     customChains: [
       {
         network: "sepolia",
@@ -174,6 +178,22 @@ const config: HardhatUserConfig = {
         urls: {
           apiURL: "https://api-sepolia.etherscan.io/api",
           browserURL: "https://sepolia.etherscan.io"
+        }
+      },
+      {
+        network: "baseSepolia",
+        chainId: 84532,
+        urls: {
+          apiURL: "https://api-sepolia.basescan.org/api",
+          browserURL: "https://sepolia.basescan.org"
+        }
+      },
+      {
+        network: "scrollSepolia",
+        chainId: 534351,
+        urls: {
+          apiURL: "https://api-sepolia.scrollscan.com/api",
+          browserURL: "https://sepolia.scrollscan.com"
         }
       }
     ]
