@@ -6,6 +6,11 @@ https://sealed.minen.com.tr/
 
 https://youtu.be/MdFKtYHHOCI
 
+This message is designed for those who want to send messages, files, and/or images, subject to a time and/or payment condition.
+The sender sends the message and its content, saves it whenever they want it to be opened, and cannot be opened or read beforehand.
+The sender sends the message and file, requests payment, and if payment is made, it is opened and transferred to their account. Otherwise, it remains encrypted and locked forever.
+
+
 ## Core Features
 - **Conditional unlocking**: Messages can require a completed payment, a future timestamp, or both before decryption is permitted.
 - **Wallet-native UX**: The Next.js frontend integrates with wagmi/viem so users interact with MetaMask and other EVM wallets without custom extensions.
