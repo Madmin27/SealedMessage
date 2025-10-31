@@ -8,6 +8,7 @@ interface PostBody {
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
+  publicHash?: string;
 }
 
 export async function POST(request: Request) {
@@ -20,6 +21,7 @@ export async function POST(request: Request) {
     const record = await upsertMapping({
       shortHash: body.shortHash,
       fullHash: body.fullHash,
+      publicHash: body.publicHash,
       metadataKeccak: body.metadataKeccak,
       fileName: body.fileName,
       fileSize: body.fileSize,

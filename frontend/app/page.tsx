@@ -13,9 +13,9 @@ export default function HomePage() {
   
   console.log("🏠 HomePage loaded");
 
-  // Callback'i sabitle - her render'da aynı referans
+  // Stabilize callback - same reference on every render
   const handleMessageSubmitted = useCallback(() => {
-    console.log("📨 Yeni mesaj gönderildi, liste güncelleniyor...");
+    console.log("📨 New message sent, updating list...");
     setRefreshKey((prev: number) => prev + 1);
   }, []);
 

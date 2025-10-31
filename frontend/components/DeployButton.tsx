@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAccount, useContractWrite, useWaitForTransaction, useNetwork } from "wagmi";
+import { useAccount, useContractWrite, useWaitForTransaction, useNetwork } from "../lib/wagmiCompat";
 import { parseAbi } from "viem";
 import { supportedChains } from "../lib/chains";
 
@@ -52,7 +52,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
   const { isLoading: isConfirming, isSuccess } = useWaitForTransaction({
     hash: data?.hash,
     onSuccess: (receipt) => {
-      // Sadece bir kez çalışmasını sağla
+      // Ensure it runs only once
       if (deployedAddress) return;
 
       // Parse logs to get deployed contract address
@@ -71,7 +71,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
         setDeployedAddress(contractAddr);
         setIsDeploying(false);
         
-        // Callback'i setTimeout ile geciktir
+        // Delay callback with setTimeout
         setTimeout(() => {
           onDeployed?.(contractAddr);
         }, 100);
@@ -82,7 +82,8 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
     },
     onError: (error) => {
       setIsDeploying(false);
-  setError(error.message || "Transaction failed");
+      const message = error instanceof Error ? error.message : "Transaction failed";
+      setError(message);
     }
   });
 
@@ -93,7 +94,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
     }
 
     if (!contractAddress || contractAddress === "0x0000000000000000000000000000000000000000") {
-      setError(`Bu ağda (${chain?.name}) factory henüz deploy edilmemiş`);
+      setError(`Factory not yet deployed on this network (${chain?.name})`);
       return;
     }
 
@@ -114,7 +115,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
   if (!mounted) {
     return (
       <div className="rounded-lg border border-slate-700 bg-slate-900/20 p-4">
-        <p className="text-sm text-slate-400">Yükleniyor...</p>
+        <p className="text-sm text-slate-400">Loading...</p>
       </div>
     );
   }
@@ -123,7 +124,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
     return (
       <div className="rounded-lg border border-yellow-600 bg-yellow-900/20 p-4">
         <p className="text-sm text-yellow-200">
-          ⚠️ Contract deploy etmek için önce cüzdanınızı bağlayın
+          ⚠️ Connect your wallet first to deploy contract
         </p>
       </div>
     );
@@ -133,10 +134,10 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
     return (
       <div className="rounded-lg border border-orange-600 bg-orange-900/20 p-4">
         <p className="text-sm text-orange-200">
-          ⚠️ Bu ağda ({chain?.name}) factory contract henüz deploy edilmemiş.
+          ⚠️ Factory contract not yet deployed on this network ({chain?.name}).
         </p>
         <p className="mt-2 text-xs text-orange-300">
-          Lütfen desteklenen bir ağa geçin (Sepolia, Base Sepolia, vb.)
+          Please switch to a supported network (Sepolia, Base Sepolia, etc.)
         </p>
       </div>
     );
@@ -147,10 +148,10 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-semibold text-aurora">
-            Kendi Contract&apos;ınızı Deploy Edin
+            Deploy Your Own Contract
           </h3>
           <p className="mt-1 text-sm text-slate-400">
-            Bu ağda ({chain?.name}) kendi ChronoMessage contract&apos;ınızı oluşturun
+            Create your own ChronoMessage contract on this network ({chain?.name})
           </p>
         </div>
         
@@ -181,10 +182,10 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
                   d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
                 />
               </svg>
-              Deploy Ediliyor...
+              Deploying...
             </span>
           ) : (
-            "🚀 Deploy Et"
+            "🚀 Deploy"
           )}
         </button>
       </div>
@@ -198,7 +199,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
       {isConfirming && (
         <div className="rounded-lg border border-blue-600 bg-blue-900/20 p-3">
           <p className="text-sm text-blue-200">
-            ⏳ Transaction onaylanıyor... (~15 saniye)
+            ⏳ Confirming transaction... (~15 seconds)
           </p>
         </div>
       )}
@@ -206,7 +207,7 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
       {deployedAddress && (
         <div className="rounded-lg border border-green-600 bg-green-900/20 p-4">
           <p className="text-sm font-semibold text-green-200">
-            ✅ Contract başarıyla deploy edildi!
+            ✅ Contract deployed successfully!
           </p>
           <div className="mt-2 space-y-2">
             <div className="flex items-center gap-2">
@@ -227,20 +228,20 @@ export function DeployButton({ onDeployed }: DeployButtonProps) {
               rel="noopener noreferrer"
               className="inline-flex items-center gap-1 text-xs text-green-300 hover:text-green-200"
             >
-              Explorer&apos;da Görüntüle →
+              View on Explorer →
             </a>
           </div>
         </div>
       )}
 
       <div className="rounded-lg bg-slate-800/50 p-4">
-        <h4 className="text-sm font-semibold text-slate-200">💡 Nasıl Çalışır?</h4>
+        <h4 className="text-sm font-semibold text-slate-200">💡 How It Works?</h4>
         <ul className="mt-2 space-y-1 text-xs text-slate-400">
-          <li>• Factory contract üzerinden yeni bir ChronoMessage instance oluşturulur</li>
-          <li>• Contract&apos;ın sahibi sizsiniz (deployer)</li>
-          <li>• Sadece sizin mesajlarınız bu contract&apos;ta saklanır</li>
-          <li>• Her ağda farklı contract deploy edebilirsiniz</li>
-          <li>• Deploy maliyeti: ~0.001-0.01 ETH (ağa göre değişir)</li>
+          <li>• New ChronoMessage instance is created via factory contract</li>
+          <li>• You are the owner of the contract (deployer)</li>
+          <li>• Only your messages are stored in this contract</li>
+          <li>• You can deploy different contracts on each network</li>
+          <li>• Deploy cost: ~0.001-0.01 ETH (varies by network)</li>
         </ul>
       </div>
     </div>

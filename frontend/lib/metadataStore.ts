@@ -4,6 +4,7 @@ import path from "path";
 interface MappingRecord {
   shortHash: string;
   fullHash: string;
+  publicHash?: string;
   fileName?: string;
   fileSize?: number;
   mimeType?: string;
@@ -45,6 +46,7 @@ async function writeStore(store: Record<string, MappingRecord>): Promise<void> {
 export async function upsertMapping(record: {
   shortHash: string;
   fullHash: string;
+  publicHash?: string | null;
   metadataKeccak?: string;
   fileName?: string;
   fileSize?: number;
@@ -57,18 +59,22 @@ export async function upsertMapping(record: {
   }
 
   const trimmedMetadataKeccak = record.metadataKeccak?.trim();
+  const trimmedPublic = record.publicHash?.trim();
+
+  const store = await readStore();
+  const existing = store[trimmedHash];
 
   const payload: MappingRecord = {
     shortHash: trimmedHash,
-    fullHash: trimmedFull,
-    metadataKeccak: trimmedMetadataKeccak,
-    fileName: record.fileName,
-    fileSize: record.fileSize,
-    mimeType: record.mimeType,
+    fullHash: trimmedFull || existing?.fullHash || trimmedFull,
+    publicHash: trimmedPublic ?? existing?.publicHash,
+    metadataKeccak: trimmedMetadataKeccak ?? existing?.metadataKeccak,
+    fileName: record.fileName ?? existing?.fileName,
+    fileSize: record.fileSize ?? existing?.fileSize,
+    mimeType: record.mimeType ?? existing?.mimeType,
     updatedAt: new Date().toISOString()
   };
 
-  const store = await readStore();
   store[trimmedHash] = payload;
   await writeStore(store);
   return payload;

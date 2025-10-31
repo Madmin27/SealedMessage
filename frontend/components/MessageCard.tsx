@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useContractWrite, useWaitForTransaction, usePublicClient, useAccount, usePrepareContractWrite, useWalletClient } from "wagmi";
+import { useContractWrite, useWaitForTransaction, usePublicClient, useAccount, usePrepareContractWrite, useWalletClient } from "../lib/wagmiCompat";
 import dayjs from "dayjs";
 import duration from "dayjs/plugin/duration";
 import relativeTime from "dayjs/plugin/relativeTime";
@@ -9,13 +9,14 @@ import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { appConfig } from "../lib/env";
 import { useContractAddress } from "../lib/useContractAddress";
 import { getChainById, ZERO_ADDRESS, type ChainKey } from "../lib/chains";
-import { generateFallbackKeyPair } from "../lib/keyAgreement";
+import { generateFallbackKeyPair } from "../lib/fallbackKey";
 import type { DecryptOptions } from "../lib/decryption";
-import { useNetwork } from "wagmi";
+import { useNetwork } from "../lib/wagmiCompat";
 import { IPFSFileDisplay } from "./IPFSFileDisplay";
 import { MessagePreview, AttachmentBadge } from "./MessagePreview";
 import { MessagePreviewData } from "@/types/message";
 import { formatUnits, keccak256 } from "viem";
+import { aesGcmDecryptMessage } from "../lib/encryption";
 
 dayjs.extend(duration);
 dayjs.extend(relativeTime);
@@ -133,6 +134,7 @@ interface NormalizedMetadata {
   dimensions?: { width: number; height: number };
   hasAttachment?: boolean;
   createdAt?: string;
+  metadataKeccak?: `0x${string}`;
 }
 
 const normaliseMetadataPayload = (
@@ -247,7 +249,63 @@ const normaliseMetadataPayload = (
     }
   }
 
+  if (typeof raw.metadataKeccak === "string") {
+    normalized.metadataKeccak = raw.metadataKeccak as `0x${string}`;
+  } else if (typeof raw.keccak === "string") {
+    normalized.metadataKeccak = raw.keccak as `0x${string}`;
+  }
+
   return normalized;
+};
+
+interface EncryptedMetadataEnvelope {
+  ciphertext: string;
+  iv: string;
+  authTag?: string;
+  [key: string]: unknown;
+}
+
+const isEncryptedMetadataEnvelope = (value: unknown): value is EncryptedMetadataEnvelope => {
+  return Boolean(
+    value &&
+    typeof value === "object" &&
+    typeof (value as any).ciphertext === "string" &&
+    typeof (value as any).iv === "string"
+  );
+};
+
+const decryptMetadataEnvelope = async (
+  envelope: EncryptedMetadataEnvelope,
+  sessionKey: Uint8Array
+): Promise<{ parsed: any; plaintextJson: string; metadataKeccak?: `0x${string}` }> => {
+  const cipherBytes = hexToBytes(envelope.ciphertext ?? "");
+  const authTagBytes = hexToBytes(envelope.authTag ?? "");
+  const ivBytes = hexToBytes(envelope.iv ?? "");
+
+  if (cipherBytes.length === 0 || authTagBytes.length === 0 || ivBytes.length === 0) {
+    throw new Error("Encrypted metadata envelope missing fields");
+  }
+
+  const plaintextJson = await aesGcmDecryptMessage(cipherBytes, authTagBytes, ivBytes, sessionKey);
+
+  try {
+    const parsed = JSON.parse(plaintextJson);
+    let metadataKeccak: `0x${string}` | undefined;
+
+    if (typeof envelope.keccak === "string") {
+      metadataKeccak = envelope.keccak as `0x${string}`;
+    } else {
+      const encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
+      if (encoder) {
+        metadataKeccak = keccak256(encoder.encode(plaintextJson)) as `0x${string}`;
+      }
+    }
+
+    return { parsed, plaintextJson, metadataKeccak };
+  } catch (err) {
+    console.error("❌ Failed to parse decrypted metadata JSON:", err);
+    throw err;
+  }
 };
 
 const formatBigintContent = (value: bigint): string => {
@@ -500,6 +558,7 @@ export function MessageCard({
   
   // localStorage'dan initial state yükle (basit key, sonra cacheKey ile güncellenecek)
   const [messageContent, setMessageContent] = useState<string | null>(null);
+  const [activeSessionKey, setActiveSessionKey] = useState<Uint8Array | null>(null);
   const [fileMetadataState, setFileMetadataState] = useState<any>(null);
   const [useThumbnailFallback, setUseThumbnailFallback] = useState(false);
   const [useGatewayFallback, setUseGatewayFallback] = useState(false);
@@ -607,6 +666,7 @@ export function MessageCard({
     setRequiredPaymentAmount(null);
     setMetadataLoaded(false);
     setOnchainUnlocked(null);
+    setActiveSessionKey(null);
     metadataReadyRef.current = false;
   }, [id, contractAddress]);
 
@@ -808,8 +868,10 @@ export function MessageCard({
 
     setIsLoadingPreviewMeta(true);
     try {
-      const metadataCidKey = `${cacheKey}-metadata-cid-${id}`;
-      const legacyMetadataKey = `metadata-cid-${id}`;
+  const metadataCidKey = `${cacheKey}-metadata-cid-${id}`;
+  const legacyMetadataKey = `metadata-cid-${id}`;
+  const publicMetadataCidKey = `${cacheKey}-public-metadata-cid-${id}`;
+  const legacyPublicMetadataKey = `public-metadata-cid-${id}`;
 
       const message = await client.readContract({
         address: contractAddress,
@@ -845,9 +907,21 @@ export function MessageCard({
           previewText: resolvedPreviewText,
           isImage: typeof normalized.mimeType === "string" ? normalized.mimeType.toLowerCase().startsWith("image/") : undefined
         });
+
+        if (typeof window !== "undefined" && cacheKey && normalized.shortHash) {
+          try {
+            window.localStorage.setItem(`${cacheKey}-metadata-${normalized.shortHash}`, JSON.stringify(normalized));
+          } catch (cacheErr) {
+            console.warn("⚠️ Failed to cache preview metadata:", cacheErr);
+          }
+        }
       };
 
-      const fetchAndValidateMetadata = async (cid: string): Promise<{ normalized: NormalizedMetadata | null; mismatch: boolean }> => {
+      const fetchAndValidateMetadata = async (
+        cid: string,
+        options: { skipHashValidation?: boolean } = {}
+      ): Promise<{ normalized: NormalizedMetadata | null; mismatch: boolean }> => {
+        const { skipHashValidation = false } = options;
         const sanitizedCid = cid.replace(/^ipfs:\/\//i, "");
         try {
           const response = await fetch(`/api/ipfs/${sanitizedCid}`, { cache: "no-store" });
@@ -876,7 +950,36 @@ export function MessageCard({
             return { normalized: null, mismatch: false };
           }
 
-          if (hasMetadataHash) {
+          if (isEncryptedMetadataEnvelope(parsed)) {
+            if (hasMetadataHash) {
+              const keccakFromEnvelope = typeof parsed.keccak === "string" ? parsed.keccak.toLowerCase() : undefined;
+              if (keccakFromEnvelope && keccakFromEnvelope !== normalizedMetadataHash) {
+                console.warn(`⚠️ Encrypted metadata keccak mismatch for CID ${sanitizedCid}. Expected ${normalizedMetadataHash}, got ${keccakFromEnvelope}`);
+                return { normalized: null, mismatch: true };
+              }
+            }
+
+            if (!activeSessionKey) {
+              return { normalized: null, mismatch: false };
+            }
+
+            try {
+              const { parsed: decrypted, metadataKeccak } = await decryptMetadataEnvelope(parsed, activeSessionKey);
+              const normalized = normaliseMetadataPayload(decrypted, {
+                shortHash: shortHashFromUri ?? undefined,
+                fullHash: sanitizedCid
+              });
+              if (metadataKeccak) {
+                normalized.metadataKeccak = metadataKeccak;
+              }
+              return { normalized, mismatch: false };
+            } catch (decryptErr) {
+              console.error("❌ Failed to decrypt metadata envelope for preview:", decryptErr);
+              return { normalized: null, mismatch: false };
+            }
+          }
+
+          if (hasMetadataHash && !skipHashValidation) {
             const encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
             if (!encoder) {
               console.warn("⚠️ TextEncoder unavailable, skipping metadata hash validation.");
@@ -907,6 +1010,21 @@ export function MessageCard({
         } catch (storageErr) {
           console.warn("⚠️ Failed to remove legacy metadata cache:", storageErr);
         }
+        try {
+          window.localStorage.removeItem(legacyPublicMetadataKey);
+        } catch (storageErr) {
+          console.warn("⚠️ Failed to remove legacy public metadata cache:", storageErr);
+        }
+
+        const cachedPublicCid = window.localStorage.getItem(publicMetadataCidKey);
+        if (cachedPublicCid) {
+          const { normalized } = await fetchAndValidateMetadata(cachedPublicCid, { skipHashValidation: true });
+          if (normalized) {
+            applyNormalizedMetadata(normalized);
+            return;
+          }
+          window.localStorage.removeItem(publicMetadataCidKey);
+        }
 
         const cachedCid = window.localStorage.getItem(metadataCidKey);
         if (cachedCid) {
@@ -922,6 +1040,18 @@ export function MessageCard({
       }
 
       let candidateCid: string | null = null;
+      let publicCandidateCid: string | null = null;
+
+      if (shortHashFromUri && typeof window !== "undefined") {
+        try {
+          const stored = window.localStorage.getItem(`file-public-metadata-${shortHashFromUri}`);
+          if (stored) {
+            publicCandidateCid = stored;
+          }
+        } catch (err) {
+          console.warn("⚠️ Failed to read public metadata short-hash cache:", err);
+        }
+      }
 
       if (hasMetadataHash) {
         const attempts = attemptedMetadataHashesRef.current;
@@ -954,8 +1084,12 @@ export function MessageCard({
             if (keccakRes.ok) {
               const data = await keccakRes.json();
               const fullCid = data?.record?.fullHash;
+              const publicCid = data?.record?.publicHash;
               if (fullCid) {
                 candidateCid = String(fullCid);
+              }
+              if (publicCid) {
+                publicCandidateCid = String(publicCid);
               }
             } else if (keccakRes.status === 404) {
               console.info("ℹ️ Metadata hash not found in mapping yet (404). Falling back to alternate resolution.");
@@ -983,29 +1117,34 @@ export function MessageCard({
         }
       }
 
-      if (!candidateCid && shortHashFromUri) {
+      if ((!candidateCid || !publicCandidateCid) && shortHashFromUri) {
         try {
           const mappingRes = await fetch(`/api/metadata-mapping/${shortHashFromUri}`, { cache: "no-store" });
           if (mappingRes.ok) {
             const data = await mappingRes.json();
             const fullCid = data?.record?.fullHash;
+            const publicCid = data?.record?.publicHash;
             if (fullCid) {
               candidateCid = String(fullCid);
+            }
+            if (publicCid) {
+              publicCandidateCid = String(publicCid);
+            }
 
-              if (hasMetadataHash) {
-                try {
-                  await fetch("/api/metadata-mapping", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                      shortHash: shortHashFromUri,
-                      fullHash: fullCid,
-                      metadataKeccak: metadataHashRaw
-                    })
-                  });
-                } catch (persistErr) {
-                  console.warn("⚠️ Failed to persist metadata keccak for short hash mapping:", persistErr);
-                }
+            if (fullCid && hasMetadataHash) {
+              try {
+                await fetch("/api/metadata-mapping", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({
+                    shortHash: shortHashFromUri,
+                    fullHash: fullCid,
+                    metadataKeccak: metadataHashRaw,
+                    publicHash: publicCid ?? undefined
+                  })
+                });
+              } catch (persistErr) {
+                console.warn("⚠️ Failed to persist metadata keccak for short hash mapping:", persistErr);
               }
             }
           }
@@ -1014,8 +1153,39 @@ export function MessageCard({
         }
       }
 
+      if (!publicCandidateCid && shortHashFromUri && typeof window !== "undefined") {
+        try {
+          const stored = window.localStorage.getItem(`file-public-metadata-${shortHashFromUri}`);
+          if (stored) {
+            publicCandidateCid = stored;
+          }
+        } catch (err) {}
+      }
+
       if (!candidateCid) {
         candidateCid = uri.replace(/^ipfs:\/\//i, "");
+      }
+
+      if (publicCandidateCid) {
+        const { normalized } = await fetchAndValidateMetadata(publicCandidateCid, { skipHashValidation: true });
+        if (normalized) {
+          applyNormalizedMetadata(normalized);
+          if (typeof window !== "undefined") {
+            try {
+              window.localStorage.setItem(publicMetadataCidKey, publicCandidateCid);
+            } catch (storageErr) {
+              console.warn("⚠️ Failed to cache public metadata CID:", storageErr);
+            }
+            if (shortHashFromUri) {
+              try {
+                window.localStorage.setItem(`file-public-metadata-${shortHashFromUri}`, publicCandidateCid);
+              } catch (storageErr) {
+                console.warn("⚠️ Failed to cache public metadata short-hash mapping:", storageErr);
+              }
+            }
+          }
+          return;
+        }
       }
 
       if (!candidateCid || candidateCid.length === 0 || candidateCid.toLowerCase().includes("stub")) {
@@ -1097,7 +1267,8 @@ export function MessageCard({
     id,
     userAddress,
     missingMetadataHashCacheKeyPrefix,
-    missingMetadataHashRecheckMs
+    missingMetadataHashRecheckMs,
+    activeSessionKey
   ]);
 
   // Preview metadata fetch et (mesaj card render edildiğinde)
@@ -1427,7 +1598,7 @@ export function MessageCard({
             }
           };
 
-          const decrypted = await decryptMessage({
+          const { plaintext: decrypted, sessionKey } = await decryptMessage({
             ciphertext: ciphertextBytes,
             authTag: authTagBytes,
             iv: ivBytes,
@@ -1442,6 +1613,8 @@ export function MessageCard({
             userAddress,
             options: currentDecryptOptions
           });
+
+          setActiveSessionKey(sessionKey);
 
           // ✅ If decrypted content is a file pointer, resolve metadata immediately
           if (decrypted.startsWith('F:')) {
@@ -1469,17 +1642,32 @@ export function MessageCard({
                 const metaRes = await fetch(`/api/ipfs/${fullHash}`, { cache: 'no-store' });
                 if (metaRes.ok) {
                   const metadata = await metaRes.json();
-                  
-                  const normalized = normaliseMetadataPayload(metadata, {
-                    shortHash,
-                    fullHash
-                  });
 
-                  // Update fileMetadataState with normalized structure
-                  setFileMetadataState(normalized);
+                  let normalized: NormalizedMetadata | null = null;
+                  if (isEncryptedMetadataEnvelope(metadata)) {
+                    try {
+                      const { parsed, metadataKeccak } = await decryptMetadataEnvelope(metadata, sessionKey);
+                      normalized = normaliseMetadataPayload(parsed, { shortHash, fullHash });
+                      if (metadataKeccak) {
+                        normalized.metadataKeccak = metadataKeccak;
+                      }
+                    } catch (envErr) {
+                      console.error('❌ Failed to decrypt metadata envelope during read:', envErr);
+                    }
+                  } else {
+                    normalized = normaliseMetadataPayload(metadata, { shortHash, fullHash });
+                  }
 
-                  // Keep original pointer token so downstream logic renders attachment UI
-                  return `F:${shortHash}`;
+                  if (normalized) {
+                    setFileMetadataState(normalized);
+                    try {
+                      localStorage.setItem(`${cacheKey}-metadata-${shortHash}`, JSON.stringify(normalized));
+                    } catch (cacheErr) {
+                      console.warn('⚠️ Failed to cache metadata for decrypted message:', cacheErr);
+                    }
+                    // Keep original pointer token so downstream logic renders attachment UI
+                    return `F:${shortHash}`;
+                  }
                 }
               }
               
@@ -1544,6 +1732,12 @@ export function MessageCard({
 
           if (viewer === receiverLower) {
             currentDecryptOptions = { role: 'receiver' };
+            try {
+              const fallbackPair = generateFallbackKeyPair(receiver);
+              currentDecryptOptions.fallbackPrivateKey = new Uint8Array(fallbackPair.privateKey);
+            } catch (fallbackErr) {
+              console.warn('⚠️ Failed to derive receiver fallback keypair', fallbackErr);
+            }
           } else if (viewer === senderLower) {
             const receiverKeyBytes = await resolveReceiverPublicKeyBytes(receiver);
             if (!receiverKeyBytes || receiverKeyBytes.length === 0) {
@@ -1747,36 +1941,66 @@ export function MessageCard({
       if (!messageContent || !messageContent.startsWith('F:')) {
         return;
       }
-      if (fileMetadataState) return;
+      const pendingSessionKeyRetry = Boolean(fileMetadataState?.requiresSessionKey && activeSessionKey);
+      if (fileMetadataState && !pendingSessionKeyRetry) return;
 
-      // Extract full hash after "F:" prefix (could be 6-char short or full IPFS hash)
-  const hashPart = messageContent.substring(2).trim();
+      if (pendingSessionKeyRetry) {
+        setFileMetadataState(null);
+      }
+
+    // Extract full hash after "F:" prefix (could be 6-char short or full IPFS hash)
+    const hashPart = messageContent.substring(2).trim();
 
       // Determine if it's a short hash (<=8 chars) or full IPFS hash (46+ chars)
       const isShortHash = hashPart.length <= 8;
       const shortHash = isShortHash ? hashPart : hashPart.substring(0, 6);
       const mappingKey = `file-metadata-${shortHash}`;
+      const publicMappingKey = `file-public-metadata-${shortHash}`;
       let fullHash: string | null = null;
+      let publicHash: string | null = null;
       try {
         fullHash = localStorage.getItem(mappingKey);
       } catch (err) {
         console.warn('⚠️ localStorage unavailable while resolving metadata hash:', err);
       }
+      try {
+        publicHash = localStorage.getItem(publicMappingKey);
+      } catch (err) {
+        console.warn('⚠️ localStorage unavailable while resolving public metadata hash:', err);
+      }
 
-      const fetchMappingFromServer = async (hash: string): Promise<string | null> => {
+      if (typeof window !== 'undefined' && cacheKey) {
+        try {
+          const cached = localStorage.getItem(`${cacheKey}-metadata-${shortHash}`);
+          if (cached) {
+            const parsed = JSON.parse(cached) as NormalizedMetadata;
+            setFileMetadataState(parsed);
+            setIsLoadingFileMetadata(false);
+            return;
+          }
+        } catch (err) {
+          console.warn('⚠️ Failed to parse cached decrypted metadata:', err);
+        }
+      }
+
+      const fetchMappingFromServer = async (
+        hash: string
+      ): Promise<{ fullHash: string | null; publicHash: string | null }> => {
         try {
           const response = await fetch(`/api/metadata-mapping/${hash}`, { cache: 'no-store' });
           if (response.ok) {
             const data = await response.json();
             const candidate = data?.record?.fullHash as string | undefined;
-            if (candidate) {
-              return candidate;
-            }
+            const publicCandidate = data?.record?.publicHash as string | undefined;
+            return {
+              fullHash: candidate ?? null,
+              publicHash: publicCandidate ?? null
+            };
           }
         } catch (err) {
           console.warn('⚠️ Failed to fetch mapping from backend:', err);
         }
-        return null;
+        return { fullHash: null, publicHash: null };
       };
 
       const resolveMetadataHashFromNetwork = async (hashFragment: string): Promise<string | null> => {
@@ -1858,14 +2082,22 @@ export function MessageCard({
         fullHash = hashPart;
       }
 
-      if (!fullHash && isShortHash) {
-        const serverHash = await fetchMappingFromServer(shortHash);
-        if (serverHash) {
-          fullHash = serverHash;
+      if ((!fullHash || !publicHash) && isShortHash) {
+        const serverHashes = await fetchMappingFromServer(shortHash);
+        if (serverHashes.fullHash) {
+          fullHash = serverHashes.fullHash;
           try {
-            localStorage.setItem(mappingKey, serverHash);
+            localStorage.setItem(mappingKey, serverHashes.fullHash);
           } catch (err) {
             console.warn('⚠️ Failed to persist backend mapping to localStorage:', err);
+          }
+        }
+        if (serverHashes.publicHash) {
+          publicHash = serverHashes.publicHash;
+          try {
+            localStorage.setItem(publicMappingKey, serverHashes.publicHash);
+          } catch (err) {
+            console.warn('⚠️ Failed to persist backend public mapping to localStorage:', err);
           }
         }
       }
@@ -1892,6 +2124,36 @@ export function MessageCard({
         }
       }
 
+      if (publicHash) {
+        try {
+          const url = `/api/ipfs/${publicHash}`;
+          const response = await fetch(url);
+          if (!response.ok) {
+            throw new Error(`Public metadata fetch failed: ${response.status}`);
+          }
+
+          const data = await response.json();
+          const normalized = normaliseMetadataPayload(data, {
+            shortHash,
+            fullHash: publicHash
+          });
+
+          setFileMetadataState(normalized);
+          try {
+            if (cacheKey) {
+              localStorage.setItem(`${cacheKey}-metadata-${shortHash}`, JSON.stringify(normalized));
+              localStorage.setItem(`${cacheKey}-public-metadata-cid-${id}`, publicHash);
+            }
+          } catch (cacheErr) {
+            console.warn('⚠️ Failed to cache public metadata:', cacheErr);
+          }
+          setIsLoadingFileMetadata(false);
+          return;
+        } catch (err) {
+          console.warn('⚠️ Failed to fetch public metadata for full hash:', err);
+        }
+      }
+
       if (fullHash) {
         try {
           const url = `/api/ipfs/${fullHash}`;
@@ -1901,8 +2163,44 @@ export function MessageCard({
             throw new Error('Metadata fetch failed');
           }
           const data = await response.json();
-          const normalized = normaliseMetadataPayload(data, { shortHash, fullHash: fullHash ?? (isShortHash ? undefined : hashPart) });
-          setFileMetadataState(normalized);
+
+          let normalized: NormalizedMetadata | null = null;
+
+          if (isEncryptedMetadataEnvelope(data)) {
+            if (!activeSessionKey) {
+              console.warn('⚠️ Session key not available yet; cannot decrypt metadata for', shortHash);
+              setFileMetadataState({
+                error: true,
+                requiresSessionKey: true,
+                message: 'Session anahtarı hazır değil. Mesajı tekrar açmayı deneyin.',
+                shortHash
+              });
+              setIsLoadingFileMetadata(false);
+              return;
+            }
+
+            const { parsed, metadataKeccak } = await decryptMetadataEnvelope(data, activeSessionKey);
+            normalized = normaliseMetadataPayload(parsed, { shortHash, fullHash });
+            if (metadataKeccak) {
+              normalized.metadataKeccak = metadataKeccak;
+            }
+          } else {
+            normalized = normaliseMetadataPayload(data, {
+              shortHash,
+              fullHash: fullHash ?? (isShortHash ? undefined : hashPart)
+            });
+          }
+
+          if (normalized) {
+            setFileMetadataState(normalized);
+            try {
+              if (cacheKey) {
+                localStorage.setItem(`${cacheKey}-metadata-${shortHash}`, JSON.stringify(normalized));
+              }
+            } catch (cacheErr) {
+              console.warn('⚠️ Failed to cache decrypted metadata:', cacheErr);
+            }
+          }
           setIsLoadingFileMetadata(false);
           return;
         } catch (err) {
@@ -1918,7 +2216,7 @@ export function MessageCard({
     };
 
     fetchFileMetadata();
-  }, [messageContent, fileMetadataState]);
+  }, [messageContent, fileMetadataState, activeSessionKey, cacheKey]);
   
   // Artık sadece Sealed kullanıyoruz
   const isSealedContract = true;
@@ -2769,7 +3067,7 @@ export function MessageCard({
         } else {
           setDecryptError(`Unable to prepare transaction: ${readableError}`);
         }
-      } else if (prepareReadStatus === 'loading') {
+  } else if (prepareReadStatus === 'pending') {
         setDecryptError('Transaction configuration is still being prepared. Please wait a moment and try again.');
       } else {
         setDecryptError('Transaction configuration unavailable. Please refresh and try again.');
@@ -2832,6 +3130,11 @@ export function MessageCard({
         }
         // One quick retry in case prepare state just updated
         await new Promise((r) => setTimeout(r, 1200));
+        if (!client) {
+          setDecryptError('Unable to access public client. Please reconnect your wallet and retry.');
+          return;
+        }
+
         try {
           const sim2 = await client.simulateContract({
             address: contractAddress,
@@ -3390,9 +3693,49 @@ export function MessageCard({
                                   try { localStorage.setItem(`file-metadata-${sh}`, resolved); } catch {}
                                   const resp = await fetch(`/api/ipfs/${resolved}`);
                                   if (resp.ok) {
-                                    const d = await resp.json();
-                                    const normalized = normaliseMetadataPayload(d, { shortHash: sh, fullHash: resolved });
-                                    setFileMetadataState(normalized);
+                                    const payload = await resp.json();
+                                    let normalized: NormalizedMetadata | null = null;
+
+                                    if (isEncryptedMetadataEnvelope(payload)) {
+                                      if (!activeSessionKey) {
+                                        setFileMetadataState({
+                                          error: true,
+                                          requiresSessionKey: true,
+                                          message: 'Session anahtarı olmadan metadata çözülemedi.',
+                                          shortHash: sh
+                                        });
+                                        setIsLoadingFileMetadata(false);
+                                        return;
+                                      }
+
+                                      try {
+                                        const { parsed, metadataKeccak } = await decryptMetadataEnvelope(payload, activeSessionKey);
+                                        normalized = normaliseMetadataPayload(parsed, { shortHash: sh, fullHash: resolved });
+                                        if (metadataKeccak) {
+                                          normalized.metadataKeccak = metadataKeccak;
+                                        }
+                                      } catch (decryptErr) {
+                                        console.error('❌ Manual resolve metadata decrypt failed:', decryptErr);
+                                        setFileMetadataState({ error: true, message: 'Metadata decrypt failed', shortHash: sh });
+                                        setIsLoadingFileMetadata(false);
+                                        return;
+                                      }
+                                    } else {
+                                      normalized = normaliseMetadataPayload(payload, { shortHash: sh, fullHash: resolved });
+                                    }
+
+                                    if (normalized) {
+                                      setFileMetadataState(normalized);
+                                      if (cacheKey) {
+                                        try {
+                                          localStorage.setItem(`${cacheKey}-metadata-${sh}`, JSON.stringify(normalized));
+                                        } catch (cacheErr) {
+                                          console.warn('⚠️ Failed to cache manually resolved metadata:', cacheErr);
+                                        }
+                                      }
+                                    } else {
+                                      setFileMetadataState({ error: true, message: 'Metadata boş döndü', shortHash: sh });
+                                    }
                                   } else {
                                     setFileMetadataState({ error: true, message: 'Resolved but fetch failed' });
                                   }

@@ -19,6 +19,7 @@ SealedMessage is a privacy-focused messaging dApp that allows creators to lock t
 - **Ephemeral session keys**: Fresh random seeds per message minimize the blast radius of any key compromise.
 - **Commit-reveal pattern**: On-chain commitments prevent tampering and double spending when conditions are enforced.
 - **Access control**: Unlock API validates wallet ownership and settlement before disclosing decryption material.
+- **Dual metadata channels**: A small plaintext summary (file name, size, thumbnail, release terms) lives alongside the encrypted payload so recipients can preview what they're paying for, while the detailed metadata and message/attachment bytes remain sealed until the escrow unlocks the session key.
 - **Key hygiene**: Sensitive configuration stays in `.env` files; keys are never committed to the repository.
 - **Dependability**: FHE/Zama dependencies were removed to reduce attack surface and simplify audits.
 

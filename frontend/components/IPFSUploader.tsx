@@ -78,7 +78,7 @@ export function IPFSUploader({ onUploadComplete, onError }: IPFSUploaderProps) {
     const type = detectFileType(file);
     setFileType(type);
 
-    // Preview oluştur
+    // Create preview
     if (type === "image" || type === "video") {
       const reader = new FileReader();
       reader.onload = (e) => {

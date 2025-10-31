@@ -5,7 +5,7 @@ import dayjs from "dayjs";
 import relativeTime from "dayjs/plugin/relativeTime";
 import advancedFormat from "dayjs/plugin/advancedFormat";
 import duration from "dayjs/plugin/duration";
-import { usePublicClient, useAccount, useNetwork } from "wagmi";
+import { usePublicClient, useAccount, useNetwork } from "../lib/wagmiCompat";
 import type { PublicClient } from "viem";
 import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { appConfig } from "../lib/env";

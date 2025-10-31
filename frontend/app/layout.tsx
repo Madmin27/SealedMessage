@@ -54,6 +54,30 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        {/* Open Graph Meta Tags */}
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content={appUrl} />
+        <meta property="og:title" content="SealedMessage - Time-Locked Messages" />
+        <meta property="og:description" content="Send encrypted time-locked messages on Base blockchain" />
+        <meta property="og:image" content={`${appUrl}/preview.png`} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="800" />
+        <meta property="og:image:alt" content="SealedMessage - Time-Locked Messages on Base" />
+        
+        {/* Twitter Card Meta Tags */}
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="SealedMessage - Time-Locked Messages" />
+        <meta name="twitter:description" content="Send encrypted time-locked messages on Base blockchain" />
+        <meta name="twitter:image" content={`${appUrl}/preview.png`} />
+        
+        {/* Farcaster Frame Meta Tags */}
+        <meta property="fc:frame" content="vNext" />
+        <meta property="fc:frame:image" content={`${appUrl}/preview.png`} />
+        <meta property="fc:frame:image:aspect_ratio" content="1.91:1" />
+        <meta property="fc:frame:button:1" content="Open App" />
+        <meta property="fc:frame:button:1:action" content="link" />
+        <meta property="fc:frame:button:1:target" content={appUrl} />
+        
         {/* Polyfill for libraries expecting a global object */}
         <script dangerouslySetInnerHTML={{
           __html: `

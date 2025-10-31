@@ -9,6 +9,7 @@ export type DecryptRole = 'receiver' | 'sender';
 export interface DecryptOptions {
   role?: DecryptRole;
   peerPublicKey?: Uint8Array;
+  fallbackPrivateKey?: Uint8Array;
 }
 
 export interface ReceiverEnvelopeChunks {
@@ -38,7 +39,12 @@ export interface DecryptMessageParams {
  * @param walletClient - Wallet client for signature
  * @param userAddress - User's address for keypair derivation
  */
-export async function decryptMessage(params: DecryptMessageParams): Promise<string> {
+export interface DecryptMessageResult {
+  plaintext: string;
+  sessionKey: Uint8Array;
+}
+
+export async function decryptMessage(params: DecryptMessageParams): Promise<DecryptMessageResult> {
   try {
     const {
       ciphertext,
@@ -78,70 +84,98 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<stri
         })()
       : senderPublicKey;
 
-    const sharedSecret = secp256k1.getSharedSecret(
-      receiverKeyPair.privateKey,
-      peerPublicKey,
-      true // compressed
-    );
-    console.log('✅ ECDH shared secret computed');
-    console.log('📍 Shared secret (first 20 bytes):', Array.from(sharedSecret.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(''));
-
-    const sharedSecretSlice = sharedSecret.slice(1); // drop prefix byte
-
-    const candidateKeys: { label: string; key: Uint8Array }[] = [
-      { label: 'slice-1-33', key: sharedSecretSlice.slice(0, 32) },
-      { label: 'sha256-slice', key: new Uint8Array(sha256(sharedSecretSlice)) },
-      { label: 'sha256-full', key: new Uint8Array(sha256(sharedSecret)) },
-      { label: 'slice-0-32', key: sharedSecret.slice(0, 32) }
+    const receiverPrivateCandidates: { label: string; privateKey: Uint8Array }[] = [
+      { label: 'derived-signature', privateKey: receiverKeyPair.privateKey }
     ];
+
+    if (options?.fallbackPrivateKey && options.fallbackPrivateKey.length === 32) {
+      const fallbackCandidate = options.fallbackPrivateKey.byteOffset === 0 && options.fallbackPrivateKey.byteLength === options.fallbackPrivateKey.buffer.byteLength
+        ? options.fallbackPrivateKey
+        : options.fallbackPrivateKey.slice();
+
+      const isDuplicate = receiverPrivateCandidates.some((candidate) =>
+        candidate.privateKey.length === fallbackCandidate.length &&
+        candidate.privateKey.every((value, index) => value === fallbackCandidate[index])
+      );
+
+      if (!isDuplicate) {
+        receiverPrivateCandidates.push({ label: 'fallback-derived', privateKey: fallbackCandidate });
+      }
+    }
 
     let lastError: unknown = null;
     const normalizedCommitment = sessionKeyCommitment?.toLowerCase();
 
-    for (const candidate of candidateKeys) {
-      if (candidate.key.length !== 32) {
-        continue;
-      }
-
+    for (const receiverCandidate of receiverPrivateCandidates) {
       try {
-        console.log(`🔑 Trying envelope AES key candidate: ${candidate.label}`);
-
-        const sessionKeyBytes = await aesGcmDecryptBytes(
-          receiverEnvelope.ciphertext,
-          receiverEnvelope.authTag,
-          receiverEnvelope.iv,
-          candidate.key
+        const sharedSecret = secp256k1.getSharedSecret(
+          receiverCandidate.privateKey,
+          peerPublicKey,
+          true // compressed
         );
 
-        if (sessionKeyBytes.length !== 32) {
-          console.warn('⚠️ Session key length unexpected', sessionKeyBytes.length);
-          continue;
-        }
+        console.log('✅ ECDH shared secret computed');
+        console.log('📍 Shared secret candidate:', receiverCandidate.label);
+        console.log('📍 Shared secret (first 20 bytes):', Array.from(sharedSecret.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(''));
 
-        if (normalizedCommitment) {
-          const commitment = keccak256(sessionKeyBytes).toLowerCase();
-          console.log('🔎 Session key commitment check:', {
-            expected: normalizedCommitment,
-            computed: commitment
-          });
-          if (commitment !== normalizedCommitment) {
-            console.warn(`⚠️ Session key commitment mismatch for candidate ${candidate.label}`);
+        const sharedSecretSlice = sharedSecret.slice(1); // drop prefix byte
+
+        const candidateKeys: { label: string; key: Uint8Array }[] = [
+          { label: `${receiverCandidate.label}-slice-1-33`, key: sharedSecretSlice.slice(0, 32) },
+          { label: `${receiverCandidate.label}-sha256-slice`, key: new Uint8Array(sha256(sharedSecretSlice)) },
+          { label: `${receiverCandidate.label}-sha256-full`, key: new Uint8Array(sha256(sharedSecret)) },
+          { label: `${receiverCandidate.label}-slice-0-32`, key: sharedSecret.slice(0, 32) }
+        ];
+
+        for (const candidate of candidateKeys) {
+          if (candidate.key.length !== 32) {
+            continue;
+          }
+
+          try {
+            console.log(`🔑 Trying envelope AES key candidate: ${candidate.label}`);
+
+            const sessionKeyBytes = await aesGcmDecryptBytes(
+              receiverEnvelope.ciphertext,
+              receiverEnvelope.authTag,
+              receiverEnvelope.iv,
+              candidate.key
+            );
+
+            if (sessionKeyBytes.length !== 32) {
+              console.warn('⚠️ Session key length unexpected', sessionKeyBytes.length);
+              continue;
+            }
+
+            if (normalizedCommitment) {
+              const commitment = keccak256(sessionKeyBytes).toLowerCase();
+              console.log('🔎 Session key commitment check:', {
+                expected: normalizedCommitment,
+                computed: commitment
+              });
+              if (commitment !== normalizedCommitment) {
+                console.warn(`⚠️ Session key commitment mismatch for candidate ${candidate.label}`);
+                continue;
+              }
+            }
+
+            const plaintext = await aesGcmDecryptMessage(ciphertext, authTag, iv, sessionKeyBytes);
+            console.log(`✅ Message decrypted with session key (candidate: ${candidate.label})`);
+            console.log('✅ Plaintext (preview):', plaintext.slice(0, 80) + (plaintext.length > 80 ? '...' : ''));
+            return { plaintext, sessionKey: sessionKeyBytes };
+          } catch (candidateErr) {
+            lastError = candidateErr;
             continue;
           }
         }
-
-        const plaintext = await aesGcmDecryptMessage(ciphertext, authTag, iv, sessionKeyBytes);
-        console.log(`✅ Message decrypted with session key (candidate: ${candidate.label})`);
-        console.log('✅ Plaintext (preview):', plaintext.slice(0, 80) + (plaintext.length > 80 ? '...' : ''));
-        return plaintext;
-      } catch (candidateErr) {
-        lastError = candidateErr;
-        continue;
+      } catch (sharedSecretErr) {
+        lastError = sharedSecretErr;
+        console.warn(`⚠️ Shared secret derivation failed for candidate ${receiverCandidate.label}`, sharedSecretErr);
       }
     }
 
     if (lastError) {
-      throw lastError;
+  throw lastError;
     }
 
     throw new Error('All AES key candidates failed');

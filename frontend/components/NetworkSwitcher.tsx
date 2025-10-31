@@ -1,6 +1,6 @@
 "use client";
 
-import { useNetwork, useSwitchNetwork } from 'wagmi';
+import { useNetwork, useSwitchNetwork } from '../lib/wagmiCompat';
 import { supportedChains } from '../lib/chains';
 import { useState, useRef, useEffect } from 'react';
 

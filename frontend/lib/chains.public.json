@@ -50,5 +50,20 @@
     },
     "blockExplorer": "https://sepolia.scrollscan.dev",
     "faucet": "https://scroll.io/alpha/faucet"
+  },
+  "incentiv": {
+    "id": 28802,
+    "name": "Incentiv Testnet",
+    "network": "incentiv-testnet",
+    "testnet": true,
+    "nativeCurrency": {
+      "name": "Testnet INC",
+      "symbol": "INC",
+      "decimals": 18
+    },
+    "rpcUrls": {
+      "default": "https://rpc3.testnet.incentiv.io",
+      "public": "https://rpc3.testnet.incentiv.io"
+    }
   }
 }

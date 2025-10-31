@@ -110,6 +110,16 @@ if (process.env.SCROLL_SEPOLIA_RPC_URL && privateKey) {
   };
 }
 
+// Incentiv Testnet
+const incentivRpcUrl = process.env.INCENTIV_TESTNET_RPC_URL ?? process.env.INCENTIV_RPC_URL;
+if (incentivRpcUrl && privateKey) {
+  networks.incentiv = {
+    url: incentivRpcUrl,
+    accounts: [privateKey],
+    chainId: 28802
+  };
+}
+
 // Polygon Mainnet
 if (process.env.POLYGON_RPC_URL && privateKey) {
   networks.polygon = {

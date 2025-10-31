@@ -6,7 +6,7 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
 import relativeTime from "dayjs/plugin/relativeTime";
-import { useAccount, usePrepareContractWrite, useContractWrite, useWaitForTransaction, useNetwork, usePublicClient } from "wagmi";
+import { useAccount, usePrepareContractWrite, useContractWrite, useWaitForTransaction, useNetwork, usePublicClient } from "../lib/wagmiCompat";
 import * as secp256k1 from "@noble/secp256k1";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { sealedMessageAbi } from "../lib/sealedMessageAbi"; // ✅ v7: Metadata preview
@@ -26,7 +26,7 @@ const DEFAULT_RECEIVER = "" as const;
 const EUINT256_BYTE_CAP = 32;
 const utf8Encoder = typeof TextEncoder !== "undefined" ? new TextEncoder() : undefined;
 const ZERO_BYTES32 = ("0x" + "00".repeat(32)) as `0x${string}`;
-const MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024; // 1 MB sınırı
+const MAX_ATTACHMENT_BYTES = 1 * 1024 * 1024; // 1 MB limit
 
 type EncryptedPayload = {
   uri: string;
@@ -143,24 +143,24 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   }, [contractAddress, chain?.id]);
   
   // AES-256-GCM only - No version switching needed
-  const isSealedContract = true; // Her zaman Sealed kullan
+  const isSealedContract = true; // Always use Sealed
   const encryptionReady = true;
 
   const [receiver, setReceiver] = useState<string>(DEFAULT_RECEIVER);
   const [content, setContent] = useState("");
   const [unlockMode, setUnlockMode] = useState<"preset" | "custom">("preset");
-  const [presetDuration, setPresetDuration] = useState<number>(30); // 30 saniye varsayılan
+  const [presetDuration, setPresetDuration] = useState<number>(30); // 30 seconds default
   const [unlock, setUnlock] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
   
   // ⏰ Time condition (optional)
   const [timeConditionEnabled, setTimeConditionEnabled] = useState(true); // Default enabled
   
-  // 💰 Payment koşulu (isteğe bağlı)
-  const [paymentAmount, setPaymentAmount] = useState<string>(""); // Wei cinsinden (internal)
+  // 💰 Payment condition (optional)
+  const [paymentAmount, setPaymentAmount] = useState<string>(""); // In wei (internal)
   const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [paymentInputMode, setPaymentInputMode] = useState<"ETH" | "Wei">("ETH"); // User-friendly input
-  const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Görünen değer
+  const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Visible value
   const [receiverEncryptionKey, setReceiverEncryptionKey] = useState<string>("");
   const [receiverKeySource, setReceiverKeySource] = useState<"registered" | "fallback" | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false); // Prevent double submission
@@ -171,7 +171,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [selectedTimezone, setSelectedTimezone] = useState<string>("Europe/Istanbul");
   const [isPresetsOpen, setIsPresetsOpen] = useState(false);
   
-  // Dosya ekleri için state (IPFS - gelecekte kullanılacak)
+  // File attachment state (IPFS - to be used in future)
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [ipfsHash, setIpfsHash] = useState<string>("");
   const [uploadingFile, setUploadingFile] = useState(false);
@@ -204,7 +204,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       dimensions?: { width: number; height: number } | null;
     } | null;
   } | null>(null);
-  const [plannedUnlockTimestamp, setPlannedUnlockTimestamp] = useState<number>(() => Math.floor(Date.now() / 1000) + 30); // 30 saniye default
+  const [plannedUnlockTimestamp, setPlannedUnlockTimestamp] = useState<number>(() => Math.floor(Date.now() / 1000) + 30); // 30 seconds default
   
   // AES-256-GCM state
   const [encryptedData, setEncryptedData] = useState<EncryptedPayload | null>(null);
@@ -244,12 +244,12 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   // Prevent hydration mismatch & Set default time on client side
   useEffect(() => {
     setMounted(true);
-    // Client-side'da local timezone ile default değer ata
-    // datetime-local input tarayıcının lokal saatinde değer bekler
+    // Set default value with local timezone on client-side
+    // datetime-local input expects value in browser's local time
     const localTime = new Date();
-    // +2 saat ekleme - şu anki saati göster
+    // No time addition - show current time
     
-    // YYYY-MM-DDTHH:mm formatında lokal saat (UTC'ye çevirme!)
+    // Local time in YYYY-MM-DDTHH:mm format (don't convert to UTC!)
     const year = localTime.getFullYear();
     const month = String(localTime.getMonth() + 1).padStart(2, '0');
     const day = String(localTime.getDate()).padStart(2, '0');
@@ -259,7 +259,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     
     setUnlock(formatted);
     setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + presetDuration);
-    // Kullanıcının timezone'unu al
+    // Get user's timezone
     setUserTimezone(dayjs.tz.guess());
   }, []);
 
@@ -359,6 +359,21 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     let uploadedMetadataCid: string | null = null;
     let uploadedMetadataKeccak: `0x${string}` | null = null;
     let resolvedShortHash = metadataShortHash || null;
+  let metadataPayload: Record<string, unknown> | null = null;
+  let publicMetadataPayload: Record<string, unknown> | null = null;
+    let metadataOptions:
+      | {
+          label?: string;
+          fileInfo?: {
+            fileName?: string | null;
+            fileSize?: number | null;
+            mimeType?: string | null;
+            dimensions?: { width: number; height: number } | null;
+          };
+          debugType?: string;
+          explicitKeccak?: `0x${string}`;
+        }
+      | undefined;
 
     const uploadMetadataJson = async (
       payload: Record<string, unknown>,
@@ -367,13 +382,16 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         label?: string;
         fileInfo?: { fileName?: string | null; fileSize?: number | null; mimeType?: string | null; dimensions?: { width: number; height: number } | null };
         debugType?: string;
-      } = {}
-    ): Promise<{ cid: string; keccak: `0x${string}`; json: string }> => {
+        explicitKeccak?: `0x${string}`;
+      } = {},
+      extraMapping?: { publicHash?: string | null }
+    ): Promise<{ cid: string; keccak: `0x${string}`; json: string; storedKeccak?: `0x${string}` }> => {
       const label = options.label ?? "message-meta";
       const payloadType = typeof (payload as any)?.type === "string" ? (payload as any).type : label;
 
       const metadataJson = JSON.stringify(payload);
       const metadataKeccak = ethers.keccak256(ethers.toUtf8Bytes(metadataJson)) as `0x${string}`;
+      const keccakForMapping = options.explicitKeccak ?? metadataKeccak;
       const metadataBlob = new Blob([metadataJson], { type: "application/json" });
       const metadataFile = new File([metadataBlob], `${label}.json`, { type: "application/json" });
 
@@ -428,10 +446,11 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           body: JSON.stringify({
             shortHash,
             fullHash: metadataHashValue,
-            metadataKeccak: metadataKeccak ?? undefined,
+            metadataKeccak: keccakForMapping ?? undefined,
             fileName: options.fileInfo?.fileName ?? undefined,
             fileSize: options.fileInfo?.fileSize ?? undefined,
-            mimeType: options.fileInfo?.mimeType ?? undefined
+            mimeType: options.fileInfo?.mimeType ?? undefined,
+            publicHash: extraMapping?.publicHash ?? undefined
           })
         });
 
@@ -445,6 +464,66 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       try {
       } catch (e) {
         console.warn("Failed to write metadata mapping cache:", e);
+      }
+
+      return {
+        cid: metadataHashValue,
+        keccak: metadataKeccak,
+        json: metadataJson,
+        storedKeccak: keccakForMapping
+      };
+    };
+
+    const uploadPublicMetadataJson = async (
+      payload: Record<string, unknown>,
+      shortHash: string
+    ): Promise<{ cid: string; keccak: `0x${string}`; json: string }> => {
+      const label = "message-public";
+      const metadataJson = JSON.stringify(payload);
+      const metadataKeccak = ethers.keccak256(ethers.toUtf8Bytes(metadataJson)) as `0x${string}`;
+      const metadataBlob = new Blob([metadataJson], { type: "application/json" });
+      const metadataFile = new File([metadataBlob], `${label}-${shortHash}.json`, { type: "application/json" });
+
+      const formData = new FormData();
+      formData.append("file", metadataFile);
+      formData.append(
+        "pinataMetadata",
+        JSON.stringify({
+          name: `${label}-${shortHash}`,
+          keyvalues: {
+            shortHash,
+            type: "message-public"
+          }
+        })
+      );
+
+      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
+      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
+
+      if (!pinataApiKey || !pinataSecretKey) {
+        throw new Error("IPFS credentials not configured");
+      }
+
+      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
+        method: "POST",
+        headers: {
+          pinata_api_key: pinataApiKey,
+          pinata_secret_api_key: pinataSecretKey
+        },
+        body: formData
+      });
+
+      if (!response.ok) {
+        throw new Error("Public metadata upload failed");
+      }
+
+      const data = await response.json();
+      const metadataHashValue = data.IpfsHash as string;
+
+      try {
+        localStorage.setItem(`file-public-metadata-${shortHash}`, metadataHashValue);
+      } catch (err) {
+        console.warn("⚠️ Failed to save public metadata mapping to localStorage:", err);
       }
 
       return { cid: metadataHashValue, keccak: metadataKeccak, json: metadataJson };
@@ -521,15 +600,16 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         version: 1,
         shortHash,
         hasAttachment: true,
+        message: sanitizedNote || null,
         attachment: {
-          ipfsHash: ipfsHash,
+          ipfsHash,
           fileName: attachedFile.name,
           fileSize: attachedFile.size,
           mimeType: attachedFile.type,
           dimensions: attachmentMetadata?.dimensions ?? null
         },
         preview: {
-          text: null,
+          text: sanitizedNote ? sanitizedNote.slice(0, 160) : null,
           encrypted: true,
           fileName: attachedFile.name,
           fileSize: attachedFile.size,
@@ -541,7 +621,27 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         createdAt: new Date().toISOString()
       };
 
-      const metadataUpload = await uploadMetadataJson(fileData, shortHash, {
+      metadataPayload = fileData;
+      publicMetadataPayload = {
+        type: "file",
+        version: 1,
+        shortHash,
+        hasAttachment: true,
+        attachment: {
+          fileName: attachedFile.name,
+          fileSize: attachedFile.size,
+          mimeType: attachedFile.type,
+          dimensions: attachmentMetadata?.dimensions ?? null
+        },
+        preview: {
+          thumbnail: thumbnailData || null,
+          mimeType: attachedFile.type || null,
+          ipfsHash: previewIpfsHash || null,
+          containsNote: Boolean(sanitizedNote)
+        },
+        createdAt: new Date().toISOString()
+      };
+      metadataOptions = {
         label: "message-meta",
         fileInfo: {
           fileName: attachedFile.name,
@@ -550,12 +650,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           dimensions: attachmentMetadata?.dimensions ?? null
         },
         debugType: "sent-metadata-upload"
-      });
-
-      setMetadataHash(metadataUpload.cid);
-      setMetadataKeccak(metadataUpload.keccak);
-      uploadedMetadataCid = metadataUpload.cid;
-      uploadedMetadataKeccak = metadataUpload.keccak;
+      };
 
       dataToEncrypt = `F:${shortHash}`;
       lastSentPreviewRef.current = {
@@ -594,13 +689,28 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           shortHash,
           hasAttachment: false,
           length: plainBytes.length,
+          message: plainText,
           preview: {
-            encrypted: true
+            encrypted: true,
+            text: plainText.slice(0, 160)
           },
           createdAt: new Date().toISOString()
         };
 
-        const metadataUpload = await uploadMetadataJson(textMetadata, shortHash, {
+        metadataPayload = textMetadata;
+        publicMetadataPayload = {
+          type: "text",
+          version: 1,
+          shortHash,
+          hasAttachment: false,
+          contentType: "text",
+          preview: {
+            encrypted: true,
+            hasMessage: true
+          },
+          createdAt: new Date().toISOString()
+        };
+        metadataOptions = {
           label: "message-text",
           fileInfo: {
             fileName: `${shortHash}.txt`,
@@ -608,12 +718,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             mimeType: "text/plain; charset=utf-8"
           },
           debugType: "sent-text-metadata-upload"
-        });
-
-        setMetadataHash(metadataUpload.cid);
-        setMetadataKeccak(metadataUpload.keccak);
-        uploadedMetadataCid = metadataUpload.cid;
-        uploadedMetadataKeccak = metadataUpload.keccak;
+        };
 
         dataToEncrypt = `F:${shortHash}`;
         lastSentPreviewRef.current = {
@@ -645,10 +750,24 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           shortHash,
           hasAttachment: false,
           length: plainText.length,
+          message: plainText,
           createdAt: new Date().toISOString()
         };
 
-        const metadataUpload = await uploadMetadataJson(inlineMetadata, shortHash, {
+        metadataPayload = inlineMetadata;
+        publicMetadataPayload = {
+          type: "text-inline",
+          version: 1,
+          shortHash,
+          hasAttachment: false,
+          contentType: "text-inline",
+          preview: {
+            encrypted: true,
+            hasMessage: true
+          },
+          createdAt: new Date().toISOString()
+        };
+        metadataOptions = {
           label: "message-inline",
           fileInfo: {
             fileName: `${shortHash}.meta.json`,
@@ -656,12 +775,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             mimeType: "application/json"
           },
           debugType: "sent-inline-metadata-upload"
-        });
-
-        setMetadataHash(metadataUpload.cid);
-        setMetadataKeccak(metadataUpload.keccak);
-        uploadedMetadataCid = metadataUpload.cid;
-        uploadedMetadataKeccak = metadataUpload.keccak;
+        };
       }
     }
     
@@ -696,6 +810,65 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
 
     const ciphertextHash = ethers.keccak256(combinedCiphertext) as `0x${string}`;
     const cipherUpload = await uploadCiphertextBinary(combinedCiphertext, resolvedShortHash);
+
+    let metadataPlaintextJson: string | null = null;
+    let metadataPlaintextKeccak: `0x${string}` | null = null;
+    let encryptedMetadataEnvelope: Record<string, unknown> | null = null;
+    let publicMetadataCid: string | null = null;
+
+    if (publicMetadataPayload && resolvedShortHash) {
+      try {
+        const publicUpload = await uploadPublicMetadataJson(publicMetadataPayload, resolvedShortHash);
+        publicMetadataCid = publicUpload.cid;
+      } catch (publicErr) {
+        console.warn("⚠️ Public metadata upload failed, continuing without public summary:", publicErr);
+      }
+    }
+
+    if (metadataPayload && resolvedShortHash) {
+      metadataPlaintextJson = JSON.stringify(metadataPayload);
+      metadataPlaintextKeccak = ethers.keccak256(ethers.toUtf8Bytes(metadataPlaintextJson)) as `0x${string}`;
+
+      const encryptedMetadata = await aesGcmEncryptMessage(metadataPlaintextJson, {
+        key: sessionKey
+      });
+
+      encryptedMetadataEnvelope = {
+        version: 1,
+        type: "encrypted-metadata",
+        shortHash: resolvedShortHash,
+        encoding: "aes-256-gcm",
+        ciphertext: bytesToHex(encryptedMetadata.ciphertext),
+        iv: bytesToHex(encryptedMetadata.iv),
+        authTag: bytesToHex(encryptedMetadata.authTag),
+        length: metadataPlaintextJson.length,
+        keccak: metadataPlaintextKeccak,
+        createdAt: new Date().toISOString(),
+        hasAttachment: Boolean((metadataPayload as any).hasAttachment),
+        payloadType: (metadataPayload as any)?.type ?? metadataOptions?.label ?? "unknown"
+      };
+    }
+
+    if (encryptedMetadataEnvelope && resolvedShortHash) {
+      const metadataUploadOptions = {
+        ...(metadataOptions ?? {}),
+        explicitKeccak: metadataPlaintextKeccak ?? undefined
+      };
+
+      const metadataUpload = await uploadMetadataJson(
+        encryptedMetadataEnvelope,
+        resolvedShortHash,
+        metadataUploadOptions,
+        { publicHash: publicMetadataCid }
+      );
+
+      if (metadataUpload) {
+        setMetadataHash(metadataUpload.cid);
+        setMetadataKeccak(metadataPlaintextKeccak ?? metadataUpload.keccak);
+        uploadedMetadataCid = metadataUpload.cid;
+        uploadedMetadataKeccak = metadataPlaintextKeccak ?? metadataUpload.keccak;
+      }
+    }
 
     const ivHex = bytesToHex(encryptionResult.iv) as `0x${string}`;
     const authTagHex = bytesToHex(encryptionResult.authTag) as `0x${string}`;
@@ -832,10 +1005,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       !!receiver &&
       isAddress(receiver) &&
       receiver.toLowerCase() !== userAddress?.toLowerCase() &&
-      (content.trim().length > 0 || ipfsHash.length > 0) && // Mesaj VEYA dosya olmalı
+      (content.trim().length > 0 || ipfsHash.length > 0) && // Message OR file must exist
       isReceiverKeyValid &&
       timeValid &&
-      hasCondition; // En az bir koşul olmalı
+      hasCondition; // At least one condition required
     
     setIsFormValid(valid);
   }, [
@@ -890,26 +1063,26 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     }
   }, [unlockMode, unlock, selectedTimezone, plannedUnlockTimestamp]);
   
-  // Dosya yükleme fonksiyonu (IPFS - şu an kullanılmıyor)
+  // File upload function (IPFS - not currently in use)
   const handleFileSelect = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    // Dosya boyutu kontrolü (max 1MB)
+    // File size check (max 1MB)
     if (file.size > MAX_ATTACHMENT_BYTES) {
-      setError(`❌ Dosya çok büyük! Maksimum: 1MB (Seçilen: ${(file.size / 1024 / 1024).toFixed(2)}MB)`);
+      setError(`❌ File too large! Maximum: 1MB (Selected: ${(file.size / 1024 / 1024).toFixed(2)}MB)`);
       return;
     }
 
-    // GÜVENLİK: Desteklenen dosya tipleri (beyaz liste)
+    // SECURITY: Supported file types (whitelist)
     const allowedTypes: Record<string, string[]> = {
-      // Resimler
+      // Images
       "image/png": [".png"],
       "image/jpeg": [".jpg", ".jpeg"],
       "image/gif": [".gif"],
       "image/webp": [".webp"],
       "image/svg+xml": [".svg"],
-      // Dokümanlar
+      // Documents
       "application/pdf": [".pdf"],
       "application/msword": [".doc"],
       "application/vnd.openxmlformats-officedocument.wordprocessingml.document": [".docx"],
@@ -919,19 +1092,19 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       "application/vnd.openxmlformats-officedocument.presentationml.presentation": [".pptx"],
       "text/plain": [".txt", ".log"],
       "application/json": [".json"],
-      // Arşivler
+      // Archives
       "application/zip": [".zip"],
       "application/x-zip-compressed": [".zip"],
       "application/x-rar-compressed": [".rar"],
       "application/vnd.rar": [".rar"],
       "application/x-7z-compressed": [".7z"],
-      // Video (küçük boyutlar için)
+      // Video (for small sizes)
       "video/mp4": [".mp4"],
       "video/webm": [".webm"]
-      // NOT: Yürütülebilir formatlar güvenlik nedeniyle hariç tutuldu
+      // NOTE: Executable formats excluded for security reasons
     };
 
-    // GÜVENLİK: Dosya uzantısı ve MIME type kontrolü
+    // SECURITY: File extension and MIME type check
     const fileExtension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
     const extensionWhitelist = new Set<string>();
     for (const extList of Object.values(allowedTypes)) {
@@ -945,13 +1118,13 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
 
     if (!mimeExtensions && !isExtensionAllowed) {
       const allowedFormats = Array.from(extensionWhitelist).sort().join(", ");
-      setError(`❌ Desteklenmeyen dosya tipi!\n\n✅ İzin verilen formatlar:\n${allowedFormats}\n\n⚠️ Güvenlik nedeniyle sadece bu formatlar kabul edilir.`);
+      setError(`❌ Unsupported file type!\n\n✅ Allowed formats:\n${allowedFormats}\n\n⚠️ Only these formats are accepted for security reasons.`);
       return;
     }
 
-    // Uzantı doğrulaması (MIME type spoofing önlemi)
+    // Extension validation (MIME type spoofing prevention)
     if (mimeExtensions && fileExtension && !mimeExtensions.includes(fileExtension)) {
-      setError(`⚠️ Dosya uzantısı (${fileExtension}) ile MIME tipi (${file.type || "bilinmiyor"}) uyuşmuyor! Olası güvenlik riski.`);
+      setError(`⚠️ File extension (${fileExtension}) doesn't match MIME type (${file.type || "unknown"})! Potential security risk.`);
       return;
     }
     
@@ -1078,8 +1251,8 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const formData = new FormData();
       formData.append("file", file);
       
-      // Demo için public Pinata gateway kullan (production'da kendi API key'inizi ekleyin)
-      // NOT: Bu demo amaçlıdır, production için .env.local dosyasına ekleyin:
+      // Use public Pinata gateway for demo (add your own API key in production)
+      // NOTE: This is for demo purposes, add to .env.local for production:
       // NEXT_PUBLIC_PINATA_API_KEY=your_key
       // NEXT_PUBLIC_PINATA_SECRET_KEY=your_secret
       
@@ -1110,8 +1283,8 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       setIpfsHash(hash);
       setContentType(1); // IPFS_HASH
       
-      // NOT: Mesajı silme! IPFS hash'i ayrı state'te sakla
-      // Kullanıcı hem mesaj hem dosya gönderebilsin
+      // NOTE: Don't clear message! Store IPFS hash in separate state
+      // Allow user to send both message and file
       
     } catch (err) {
       console.error("❌ IPFS upload error:", err);
@@ -1254,6 +1427,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   // Sealed write hook
   const contractWrite = useContractWrite(configSealed);
   const { data, isLoading: isPending, write, error: writeError } = contractWrite;
+  const isWriteReady = Boolean(configSealed.request);
 
   const { isLoading: isConfirming, isSuccess } = useWaitForTransaction({ 
     hash: data?.hash 
@@ -1547,7 +1721,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const encrypted = await encryptContent();
       setEncryptedData(encrypted);
 
-      // Eğer dosya varsa metadata hash'i de kaydet
+      // If file exists, also save metadata hash
       if (encrypted.metadataCid) {
         setMetadataHash(encrypted.metadataCid);
       }
@@ -1732,7 +1906,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         />
         {receiver && receiver.toLowerCase() === userAddress?.toLowerCase() ? (
           <p className="text-xs text-red-400">
-            ⚠️ Bu sizin adresiniz! Kendine mesaj gönderemezsiniz.
+            ⚠️ This is your address! You cannot send a message to yourself.
           </p>
         ) : (
           <p className="text-xs text-text-light/60">
@@ -1793,11 +1967,11 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           value={content}
           onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setContent(event.target.value)}
           placeholder="Write and Seal"
-          disabled={!!attachedFile} // Dosya ekliyse mesaj yazılamaz
+          disabled={!!attachedFile} // Cannot write message when file attached
           className="min-h-[120px] rounded-lg border border-cyber-blue/40 bg-midnight/60 px-4 py-3 text-text-light outline-none transition focus:border-cyber-blue focus:ring-2 focus:ring-cyber-blue/60 disabled:opacity-50 disabled:cursor-not-allowed"
         />
         
-        {/* Dosya Ekleme Butonu */}
+        {/* File Attachment Button */}
         <div className="flex items-center gap-3">
           <input
             ref={fileInputRef}
@@ -2158,14 +2332,14 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
               )}
             </div>
             <p className="text-xs text-purple-300/80 italic">
-              🔒 Alıcı, mesajı okuyabilmek için bu miktarı ödeyecek. Ödeme otomatik olarak size (gönderici) aktarılır.
+              🔒 Receiver will pay this amount to read the message. Payment automatically transferred to you (sender).
             </p>
           </div>
         )}
         
         {!paymentEnabled && (
           <p className="text-xs text-text-light/60">
-            💡 İsteğe bağlı: Mesajın okunması için ödeme koşulu ekleyebilirsiniz
+            💡 Optional: You can add payment condition for reading the message
           </p>
         )}
       </div>
@@ -2177,13 +2351,13 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           <span>🔐 Encrypting message with AES-256-GCM...</span>
         </div>
       )}
-      {encryptedData && !isEncrypting && !write && (
+      {encryptedData && !isEncrypting && !isWriteReady && (
         <div className="rounded-lg bg-gradient-to-r from-green-500/10 to-blue-500/10 border border-green-400/40 p-3 text-sm flex items-center gap-2">
           <span className="text-green-300">✅ Message encrypted!</span>
           <span className="text-blue-300 animate-pulse">Preparing transaction...</span>
         </div>
       )}
-      {encryptedData && !isEncrypting && write && (
+      {encryptedData && !isEncrypting && isWriteReady && (
         <div className="rounded-lg bg-green-500/10 border border-green-400/40 p-3 text-sm text-green-300">
           ✅ Message encrypted successfully with AES-256-GCM
         </div>
@@ -2193,30 +2367,30 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       {/* Encryption System Loading Indicator */}
       {!encryptionReady && (
         <div className="text-sm text-yellow-400 mb-2">
-          ⏳ Şifreleme sistemi yükleniyor...
+          ⏳ Loading encryption system...
         </div>
       )}
       
       <button
         type="submit"
-        disabled={!encryptionReady || isPending || isConfirming || isEncrypting || isSubmitting || (!!encryptedData && !write)}
+  disabled={!encryptionReady || isPending || isConfirming || isEncrypting || isSubmitting || (!!encryptedData && !isWriteReady)}
         className="w-full rounded-lg bg-gradient-to-r from-aurora via-sky-500 to-sunset px-4 py-3 text-center text-sm font-semibold uppercase tracking-widest text-slate-900 transition hover:scale-[1.02] disabled:cursor-not-allowed disabled:opacity-60"
       >
         {!encryptionReady
-          ? "⏳ Hazırlanıyor..."
+          ? "⏳ Preparing..."
           : isSubmitting
-          ? "⏳ İşlem devam ediyor..."
+          ? "⏳ Processing..."
           : isEncrypting 
-          ? "🔐 Şifreleniyor..." 
+          ? "🔐 Encrypting..." 
           : isPending || isConfirming 
-            ? "📤 İşlem gönderiliyor..." 
+            ? "📤 Sending transaction..." 
             : encryptedData && !write
-              ? "⏳ İşlem hazırlanıyor..."
+              ? "⏳ Preparing transaction..."
               : "🔐 Send Message"}
       </button>
       {data?.hash ? (
         <p className="text-xs text-text-light/60">
-          İşlem hash&apos;i: {data.hash.slice(0, 10)}...{data.hash.slice(-6)}
+          Transaction hash: {data.hash.slice(0, 10)}...{data.hash.slice(-6)}
         </p>
       ) : null}
     </form>

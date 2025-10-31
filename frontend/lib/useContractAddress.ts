@@ -1,4 +1,4 @@
-import { useNetwork } from "wagmi";
+import { useNetwork } from "./wagmiCompat";
 import { getContractAddress } from "./chains";
 
 /**
