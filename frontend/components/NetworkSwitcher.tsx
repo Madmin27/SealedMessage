@@ -103,17 +103,14 @@ export function NetworkSwitcher() {
                     }
 
                     const attemptSwitch = async () => {
-                      if (switchNetwork) {
-                        switchNetwork(targetChainId);
-                        return;
-                      }
+                      const targetChainHex = `0x${targetChainId.toString(16)}`;
 
                       if (switchNetworkAsync) {
                         try {
                           await switchNetworkAsync(targetChainId);
                           return;
                         } catch (err) {
-                          console.warn('⚠️ switchNetworkAsync failed', err);
+                          console.warn('⚠️ switchNetworkAsync failed, falling back to direct request', err);
                         }
                       }
 
@@ -122,7 +119,7 @@ export function NetworkSwitcher() {
                         try {
                           await ethereum.request({
                             method: 'wallet_switchEthereumChain',
-                            params: [{ chainId: `0x${targetChainId.toString(16)}` }]
+                            params: [{ chainId: targetChainHex }]
                           });
                           return;
                         } catch (err: any) {
@@ -137,7 +134,7 @@ export function NetworkSwitcher() {
                               await ethereum.request({
                                 method: 'wallet_addEthereumChain',
                                 params: [{
-                                  chainId: `0x${targetChainId.toString(16)}`,
+                                  chainId: targetChainHex,
                                   chainName: chainConfig.name,
                                   nativeCurrency: {
                                     name: chainConfig.nativeCurrency.name,
@@ -153,7 +150,7 @@ export function NetworkSwitcher() {
                               try {
                                 await ethereum.request({
                                   method: 'wallet_switchEthereumChain',
-                                  params: [{ chainId: `0x${targetChainId.toString(16)}` }]
+                                  params: [{ chainId: targetChainHex }]
                                 });
                                 console.log('🔁 Switched to newly added network:', chainConfig.name);
                               } catch (switchAfterAddError) {
