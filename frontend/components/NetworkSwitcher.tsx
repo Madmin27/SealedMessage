@@ -125,8 +125,34 @@ export function NetworkSwitcher() {
                             params: [{ chainId: `0x${targetChainId.toString(16)}` }]
                           });
                           return;
-                        } catch (err) {
-                          console.warn('⚠️ Wallet refused to switch networks', err);
+                        } catch (err: any) {
+                          // Error code 4902: chain not added to wallet yet
+                          if (err?.code === 4902) {
+                            try {
+                              // Prepare network parameters
+                              const rpcUrl = chainConfig.rpcUrls.infura || chainConfig.rpcUrls.default;
+                              await ethereum.request({
+                                method: 'wallet_addEthereumChain',
+                                params: [{
+                                  chainId: `0x${targetChainId.toString(16)}`,
+                                  chainName: chainConfig.name,
+                                  nativeCurrency: {
+                                    name: chainConfig.nativeCurrency.name,
+                                    symbol: chainConfig.nativeCurrency.symbol,
+                                    decimals: chainConfig.nativeCurrency.decimals
+                                  },
+                                  rpcUrls: [rpcUrl],
+                                  blockExplorerUrls: chainConfig.blockExplorer ? [chainConfig.blockExplorer] : undefined
+                                }]
+                              });
+                              console.log('✅ Network added to wallet:', chainConfig.name);
+                              return;
+                            } catch (addErr) {
+                              console.error('❌ Failed to add network:', addErr);
+                            }
+                          } else {
+                            console.warn('⚠️ Wallet refused to switch networks', err);
+                          }
                         }
                       }
 
