@@ -396,18 +396,20 @@ const trimDecimalString = (raw: string): string => {
 
 const formatPaymentAmount = (
   value: bigint | null | undefined,
-  options?: { includeUnit?: boolean; zeroLabel?: string }
+  options?: { includeUnit?: boolean; zeroLabel?: string; decimals?: number; symbol?: string }
 ): string => {
   const includeUnit = options?.includeUnit ?? true;
-  const zeroLabel = options?.zeroLabel ?? (includeUnit ? "Bedelsiz" : "0");
+  const decimals = options?.decimals ?? 18;
+  const symbol = options?.symbol ?? "ETH";
+  const zeroLabel = options?.zeroLabel ?? (includeUnit ? `0 ${symbol}` : "0");
 
   if (!value || value === 0n) {
     return zeroLabel;
   }
 
   try {
-    const formatted = trimDecimalString(formatUnits(value, 18));
-    return includeUnit ? `${formatted} ETH` : formatted;
+    const formatted = trimDecimalString(formatUnits(value, decimals));
+    return includeUnit ? `${formatted} ${symbol}` : formatted;
   } catch {
     const fallback = value.toString();
     return includeUnit ? `${fallback} wei` : fallback;
@@ -493,6 +495,24 @@ export function MessageCard({
     }
     return getChainById(messageChainId);
   }, [messageChainId]);
+  const nativeCurrencySymbol = useMemo(() => {
+    if (messageChainConfig?.nativeCurrency?.symbol) {
+      return messageChainConfig.nativeCurrency.symbol;
+    }
+    if (chain?.nativeCurrency?.symbol) {
+      return chain.nativeCurrency.symbol;
+    }
+    return "ETH";
+  }, [chain, messageChainConfig]);
+  const nativeCurrencyDecimals = useMemo(() => {
+    if (messageChainConfig?.nativeCurrency?.decimals != null) {
+      return messageChainConfig.nativeCurrency.decimals;
+    }
+    if (chain?.nativeCurrency?.decimals != null) {
+      return chain.nativeCurrency.decimals;
+    }
+    return 18;
+  }, [chain, messageChainConfig]);
   const messageChainKey = propsChainKey;
   const explorerBaseUrl = useMemo(() => {
     if (messageChainConfig?.blockExplorer) {
@@ -2361,7 +2381,14 @@ export function MessageCard({
     timeReady &&
     !shouldAttachPayment;
   const paymentIsFree = !requiredPaymentAmount || requiredPaymentAmount === 0n;
-  const paymentDisplay = metadataLoaded ? formatPaymentAmount(outstandingPayment, { includeUnit: true, zeroLabel: "0 ETH" }) : null;
+  const zeroPaymentLabel = useMemo(() => `0 ${nativeCurrencySymbol}`, [nativeCurrencySymbol]);
+  const paymentDisplay = metadataLoaded
+    ? formatPaymentAmount(outstandingPayment, {
+        includeUnit: true,
+        decimals: nativeCurrencyDecimals,
+        symbol: nativeCurrencySymbol
+      })
+    : null;
   const paymentBadgeClass = metadataLoaded
     ? (paymentIsFree || paymentSettled ? "text-emerald-300" : "text-amber-300")
     : "text-slate-500 animate-pulse";
@@ -2373,7 +2400,7 @@ export function MessageCard({
   const paymentValueToSend = canUnlockWithPayment ? outstandingPayment : undefined;
 
   const summaryPaymentBadgeValue =
-    paymentDisplay ?? (metadataLoaded ? (paymentIsFree ? "0 ETH" : "Pending...") : "Loading...");
+    paymentDisplay ?? (metadataLoaded ? (paymentIsFree ? zeroPaymentLabel : "Pending...") : "Loading...");
   const summaryPaymentDescription = metadataLoaded
     ? paymentIsFree
       ? (isSent
@@ -2493,7 +2520,10 @@ export function MessageCard({
     activeChainId,
     isPaymentActionPending,
     walletOnExpectedChain,
-    messageChainConfig?.name
+    messageChainConfig?.name,
+    nativeCurrencyDecimals,
+    nativeCurrencySymbol,
+    zeroPaymentLabel
   ]);
 
   useEffect(() => {
@@ -3052,7 +3082,14 @@ export function MessageCard({
     }
 
     if (shouldAttachPayment) {
-      setDecryptError(`Payment of ${formatPaymentAmount(outstandingPayment, { includeUnit: true, zeroLabel: "0 ETH" })} is required before decrypting. Please complete the payment first.`);
+      setDecryptError(
+        `Payment of ${formatPaymentAmount(outstandingPayment, {
+          includeUnit: true,
+          decimals: nativeCurrencyDecimals,
+          symbol: nativeCurrencySymbol,
+          zeroLabel: zeroPaymentLabel
+        })} is required before decrypting. Please complete the payment first.`
+      );
       return;
     }
 
@@ -3509,7 +3546,11 @@ export function MessageCard({
                   ) : (
                     <>
                       <span>💰</span>
-                      Pay {formatPaymentAmount(outstandingPayment, { zeroLabel: "0 ETH" })} to Unlock
+                      Pay {formatPaymentAmount(outstandingPayment, {
+                        decimals: nativeCurrencyDecimals,
+                        symbol: nativeCurrencySymbol,
+                        zeroLabel: zeroPaymentLabel
+                      })} to Unlock
                     </>
                   )}
                 </button>

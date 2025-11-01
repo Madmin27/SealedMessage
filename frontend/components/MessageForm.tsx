@@ -11,12 +11,13 @@ import * as secp256k1 from "@noble/secp256k1";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { sealedMessageAbi } from "../lib/sealedMessageAbi"; // ✅ v7: Metadata preview
 import { appConfig } from "../lib/env";
-import { decodeEventLog, isAddress, formatUnits } from "viem";
+import { decodeEventLog, isAddress, formatUnits, parseUnits } from "viem";
 import { useContractAddress, useHasContract } from "../lib/useContractAddress";
 import { AttachmentBadge } from "./MessagePreview";
 import { aesGcmEncryptMessage, aesGcmEncryptBytes, bytesToHex, hexToBytes } from "../lib/encryption";
 import { generateFallbackKeyPair } from "../lib/fallbackKey";
 import { getOrCreateEncryptionKey } from "../lib/keyAgreement";
+import { getChainById } from "../lib/chains";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -141,6 +142,24 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       : "";
     return `${prefix}-msg${chainSuffix}`;
   }, [contractAddress, chain?.id]);
+
+  const currentChainConfig = useMemo(() => {
+    if (!chain?.id) {
+      return undefined;
+    }
+    return getChainById(chain.id);
+  }, [chain?.id]);
+
+  const nativeSymbol = currentChainConfig?.nativeCurrency.symbol ?? chain?.nativeCurrency?.symbol ?? "ETH";
+  const nativeDecimals = currentChainConfig?.nativeCurrency.decimals ?? chain?.nativeCurrency?.decimals ?? 18;
+  const weiPlaceholder = useMemo(() => {
+    try {
+      return parseUnits("0.001", nativeDecimals).toString();
+    } catch (err) {
+      console.warn("⚠️ Failed to compute wei placeholder", err);
+  return "1000000000000000"; // Fallback ~0.001 in 18-decimal base units
+    }
+  }, [nativeDecimals]);
   
   // AES-256-GCM only - No version switching needed
   const isSealedContract = true; // Always use Sealed
@@ -159,7 +178,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   // 💰 Payment condition (optional)
   const [paymentAmount, setPaymentAmount] = useState<string>(""); // In wei (internal)
   const [paymentEnabled, setPaymentEnabled] = useState(false);
-  const [paymentInputMode, setPaymentInputMode] = useState<"ETH" | "Wei">("ETH"); // User-friendly input
+  const [paymentInputMode, setPaymentInputMode] = useState<"native" | "wei">("native"); // User-friendly input
   const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Visible value
   const [receiverEncryptionKey, setReceiverEncryptionKey] = useState<string>("");
   const [receiverKeySource, setReceiverKeySource] = useState<"registered" | "fallback" | null>(null);
@@ -2231,35 +2250,41 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                 <label htmlFor="paymentAmount" className="text-xs font-medium text-purple-300">
                   💵 Required Payment Amount
                 </label>
-                {/* ETH/Wei Toggle */}
+                {/* Native/Wei Toggle */}
                 <div className="flex gap-1 rounded-lg bg-midnight/60 p-1">
                   <button
                     type="button"
                     onClick={() => {
-                      setPaymentInputMode("ETH");
-                      // Convert current Wei to ETH
-                      if (paymentAmount) {
-                        const ethValue = formatUnits(BigInt(paymentAmount), 18);
-                        setPaymentInputValue(ethValue);
+                      setPaymentInputMode("native");
+                      // Convert current Wei/base units to native units
+                      if (paymentAmount && paymentAmount !== "0") {
+                        try {
+                          const nativeValue = formatUnits(BigInt(paymentAmount), nativeDecimals);
+                          setPaymentInputValue(nativeValue);
+                          return;
+                        } catch (convertErr) {
+                          console.warn("⚠️ Failed to convert payment amount to native units", convertErr);
+                        }
                       }
+                      setPaymentInputValue("0");
                     }}
                     className={`px-3 py-1 text-xs font-medium rounded transition ${
-                      paymentInputMode === "ETH"
+                      paymentInputMode === "native"
                         ? "bg-purple-500 text-white"
                         : "text-purple-300 hover:text-purple-200"
                     }`}
                   >
-                    ETH
+                    {nativeSymbol}
                   </button>
                   <button
                     type="button"
                     onClick={() => {
-                      setPaymentInputMode("Wei");
+                      setPaymentInputMode("wei");
                       // Show current Wei value
                       setPaymentInputValue(paymentAmount || "0");
                     }}
                     className={`px-3 py-1 text-xs font-medium rounded transition ${
-                      paymentInputMode === "Wei"
+                      paymentInputMode === "wei"
                         ? "bg-purple-500 text-white"
                         : "text-purple-300 hover:text-purple-200"
                     }`}
@@ -2276,17 +2301,18 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                 onChange={(e) => {
                   const value = e.target.value;
                   
-                  if (paymentInputMode === "ETH") {
-                    // Allow decimal numbers for ETH
+                  if (paymentInputMode === "native") {
+                    // Allow decimal numbers for the native unit
                     if (value === '' || /^\d*\.?\d*$/.test(value)) {
                       setPaymentInputValue(value);
                       
-                      // Convert to Wei
+                      // Convert to base units
                       if (value && value !== '.') {
                         try {
-                          const weiValue = Math.floor(parseFloat(value) * 1e18).toString();
+                          const weiValue = parseUnits(value, nativeDecimals).toString();
                           setPaymentAmount(weiValue);
-                        } catch {
+                        } catch (convertErr) {
+                          console.warn("⚠️ Failed to parse native value", convertErr);
                           setPaymentAmount('0');
                         }
                       } else {
@@ -2301,15 +2327,15 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                     }
                   }
                 }}
-                placeholder={paymentInputMode === "ETH" ? "0.001" : "1000000000000000"}
+                placeholder={paymentInputMode === "native" ? "0.001" : weiPlaceholder}
                 className="rounded-lg border border-purple-500/40 bg-midnight/60 px-4 py-3 font-mono text-sm text-text-light outline-none transition focus:border-purple-500 focus:ring-2 focus:ring-purple-500/60"
               />
               
               {/* Helper Text */}
               <p className="text-xs text-purple-300/60">
-                {paymentInputMode === "ETH" 
-                  ? "💡 Example: 0.001 ETH (decimals allowed)"
-                  : "💡 Example: 1000000000000000 Wei (1 ETH = 10¹⁸ Wei)"
+                {paymentInputMode === "native" 
+                  ? `💡 Example: 0.001 ${nativeSymbol} (decimals allowed)`
+                  : `💡 Example: ${weiPlaceholder} Wei (1 ${nativeSymbol} = 10^${nativeDecimals} Wei)`
                 }
               </p>
               
@@ -2317,9 +2343,9 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
               {paymentAmount && paymentAmount !== '0' && (
                 <div className="rounded-lg bg-purple-500/10 border border-purple-500/30 p-3 space-y-1">
                   <div className="flex justify-between text-xs">
-                    <span className="text-purple-300/80">ETH:</span>
+                    <span className="text-purple-300/80">{nativeSymbol}:</span>
                     <span className="font-mono text-purple-200">
-                      {formatUnits(BigInt(paymentAmount), 18)} ETH
+                      {formatUnits(BigInt(paymentAmount), nativeDecimals)} {nativeSymbol}
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
