@@ -142,7 +142,7 @@ export function NetworkSwitcher() {
                                   nativeCurrency: {
                                     name: chainConfig.nativeCurrency.name,
                                     symbol: chainConfig.nativeCurrency.symbol,
-                                    decimals: chainConfig.nativeCurrency.decimals
+                                    decimals: 18  // MetaMask only accepts 18 decimals for native currency
                                   },
                                   rpcUrls: [rpcUrl],
                                   blockExplorerUrls: chainConfig.blockExplorer ? [chainConfig.blockExplorer] : undefined
