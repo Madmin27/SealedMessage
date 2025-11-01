@@ -142,13 +142,23 @@ export function NetworkSwitcher() {
                                   nativeCurrency: {
                                     name: chainConfig.nativeCurrency.name,
                                     symbol: chainConfig.nativeCurrency.symbol,
-                                    decimals: 18  // MetaMask only accepts 18 decimals for native currency
+                                    decimals: 18 // MetaMask only accepts 18 decimals for native currency
                                   },
                                   rpcUrls: [rpcUrl],
                                   blockExplorerUrls: chainConfig.blockExplorer ? [chainConfig.blockExplorer] : undefined
                                 }]
                               });
                               console.log('✅ Network added to wallet:', chainConfig.name);
+
+                              try {
+                                await ethereum.request({
+                                  method: 'wallet_switchEthereumChain',
+                                  params: [{ chainId: `0x${targetChainId.toString(16)}` }]
+                                });
+                                console.log('🔁 Switched to newly added network:', chainConfig.name);
+                              } catch (switchAfterAddError) {
+                                console.warn('⚠️ Failed to switch after adding network', switchAfterAddError);
+                              }
                               return;
                             } catch (addErr) {
                               console.error('❌ Failed to add network:', addErr);
