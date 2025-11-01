@@ -1,0 +1,8 @@
+{
+  "network": "arcTestnet",
+  "chainId": 5042002,
+  "contractAddress": "0xa1495F1a4c93e1acD5d178270404C8e8b225C4B5",
+  "deployer": "0xF6D39Dda8997407110264acEc6a24345834cB639",
+  "deployedAt": "2025-11-01T09:05:12.669Z",
+  "transactionHash": "0x7638ae0611b1496d956510f9ad0530b20fd8741173d4d2fe4f3ce53d6db6b87b"
+}

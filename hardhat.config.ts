@@ -120,6 +120,15 @@ if (incentivRpcUrl && privateKey) {
   };
 }
 
+// ARC Testnet
+if (process.env.ARC_TESTNET_RPC_URL && privateKey) {
+  networks.arcTestnet = {
+    url: process.env.ARC_TESTNET_RPC_URL,
+    accounts: [privateKey],
+    chainId: 5042002
+  };
+}
+
 // Polygon Mainnet
 if (process.env.POLYGON_RPC_URL && privateKey) {
   networks.polygon = {

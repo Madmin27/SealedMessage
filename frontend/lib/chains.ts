@@ -30,7 +30,8 @@ const CONTRACT_ADDRESSES: Record<string, string | undefined> = {
   sepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_SEPOLIA,
   baseSepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_BASE_SEPOLIA,
   scrollSepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_SCROLL_SEPOLIA,
-  incentiv: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_INCENTIV
+  incentiv: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_INCENTIV,
+  arcTestnet: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_ARC_TESTNET
 };
 
 export type ChainDefinition = {

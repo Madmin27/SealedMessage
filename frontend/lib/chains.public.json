@@ -65,5 +65,22 @@
       "default": "https://rpc3.testnet.incentiv.io",
       "public": "https://rpc3.testnet.incentiv.io"
     }
+  },
+  "arcTestnet": {
+    "id": 5042002,
+    "name": "ARC Testnet",
+    "network": "arc-testnet",
+    "testnet": true,
+    "nativeCurrency": {
+      "name": "USDC",
+      "symbol": "USDC",
+      "decimals": 6
+    },
+    "rpcUrls": {
+      "default": "https://rpc.testnet.arc.network",
+      "public": "https://rpc.testnet.arc.network"
+    },
+    "blockExplorer": "https://testnet.arcscan.app",
+    "faucet": "https://faucet.circle.com"
   }
 }
