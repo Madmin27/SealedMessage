@@ -126,8 +126,11 @@ export function NetworkSwitcher() {
                           });
                           return;
                         } catch (err: any) {
-                          // Error code 4902: chain not added to wallet yet
-                          if (err?.code === 4902) {
+                          // Error code 4902 or message indicates chain not added to wallet yet
+                          const isChainNotAdded = err?.code === 4902 || 
+                                                 (err?.message && err.message.includes('Unrecognized chain ID'));
+                          
+                          if (isChainNotAdded) {
                             try {
                               // Prepare network parameters
                               const rpcUrl = chainConfig.rpcUrls.infura || chainConfig.rpcUrls.default;
