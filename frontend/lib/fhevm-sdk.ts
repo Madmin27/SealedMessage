@@ -6,7 +6,7 @@ export interface FHEEncryptedInput {
 }
 
 const ZAMA_RELAYER_URL =
-  process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL || 'https://relayer.testnet.zama.cloud';
+  process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL || 'https://relayer.testnet.zama.org/v2';
 
 // Lazy-loaded createInstance factory
 let _fhevmCreateInstance: any = null;

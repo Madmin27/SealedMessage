@@ -1,7 +1,8 @@
 import { ethers } from "ethers";
 
+const DEFAULT_SECURE_RELAYER_URL = "https://relayer.testnet.zama.org/v2";
 const SECURE_RELAYER_URL =
-  process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL ?? "https://relayer.testnet.zama.cloud";
+  process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL ?? DEFAULT_SECURE_RELAYER_URL;
 
 type FheInstance = {
   createEncryptedInput: (contractAddress: string, userAddress: string) => {
@@ -34,20 +35,27 @@ async function getFheInstance(): Promise<FheInstance> {
   }
 
   if (!fheInstancePromise) {
-    fheInstancePromise = import("@zama-fhe/relayer-sdk/web").then(async ({ createInstance, SepoliaConfigV2, initSDK }) => {
-      // WASM modülünü (tfhe_bg.wasm) yükle — __wbindgen_malloc vb. fonksiyonlar
-      // bu sayede kullanılabilir olur. initSDK() olmadan createInstance() çağrılırsa
-      // "Impossible to fetch public key: wrong relayer url" hatası alınır çünkü
-      // TFHE public key deserialization WASM'de çalışır.
-      await initSDK();
+    fheInstancePromise = import("@zama-fhe/relayer-sdk/web")
+      .then(async ({ createInstance, SepoliaConfigV2, initSDK }) => {
+        // WASM modülünü (tfhe_bg.wasm) yükle — __wbindgen_malloc vb. fonksiyonlar
+        // bu sayede kullanılabilir olur. initSDK() olmadan createInstance() çağrılırsa
+        // "Impossible to fetch public key: wrong relayer url" hatası alınır çünkü
+        // TFHE public key deserialization WASM'de çalışır.
+        await initSDK();
 
-      return createInstance({
-        ...SepoliaConfigV2,
-        chainId: 11155111,
-        relayerUrl: SECURE_RELAYER_URL,
-        network: (window as any).ethereum,
-      }) as Promise<FheInstance>;
-    });
+        return createInstance({
+          ...SepoliaConfigV2,
+          chainId: 11155111,
+          relayerUrl: SECURE_RELAYER_URL,
+          network: (window as any).ethereum,
+        }) as unknown as Promise<FheInstance>;
+      })
+      .catch((error) => {
+        fheInstancePromise = null;
+        throw new Error(
+          `Failed to initialize FHE instance for ${SECURE_RELAYER_URL}: ${error instanceof Error ? error.message : String(error)}`
+        );
+      });
   }
 
   return fheInstancePromise;
