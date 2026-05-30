@@ -20,7 +20,7 @@ export function HomePageClient() {
   const activeChainId = chain?.id;
 
   const selectedVersion = activeChainId ? getSelectedVersion(activeChainId) : undefined;
-  const isSecureFHE = selectedVersion === "v5-fhe";
+  const isSecureFHE = selectedVersion === "v5-fhe" || selectedVersion === "v5.1-fhe";
   const isLegacyFHE = selectedVersion === "v4-fhe-legacy";
   const isFHE = isSecureFHE || isLegacyFHE;
 
@@ -53,7 +53,7 @@ export function HomePageClient() {
 
       {isSecureFHE ? (
         <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr] xl:grid-cols-[1fr_1fr]">
-          <SecureFHEMessageForm onSubmitted={handleMessageSubmitted} />
+          <SecureFHEMessageForm onSubmitted={handleMessageSubmitted} versionKey={selectedVersion} />
           <div className="rounded-xl border border-emerald-500/30 bg-midnight/80 p-6 text-sm text-text-light/80 shadow-glow-blue">
             <h2 className="text-lg font-semibold text-emerald-400">🛡️ How Secure FHE Works</h2>
             <ol className="mt-4 list-decimal space-y-2 pl-4">

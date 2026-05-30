@@ -6,6 +6,7 @@ import { isAddress } from "viem";
 import { useAccount, useNetwork } from "../lib/wagmiCompat";
 import { useContractAddress } from "../lib/useContractAddress";
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
+import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
 import { pinFileToIpfs } from "../lib/ipfsClient";
 import { combineMessageKey, computeKeccakFromString, encryptBytesEnvelope, encryptJsonEnvelope, generateMessageKey, splitMessageKey } from "../lib/securePayload";
 import { encryptKeyPartsForContract } from "../lib/fheSecure";
@@ -18,6 +19,7 @@ import type { PublicPreviewData } from "../lib/preview";
 
 type Props = {
   onSubmitted?: () => void;
+  versionKey?: string;
 };
 
 type AttachmentMeta = {
@@ -26,7 +28,12 @@ type AttachmentMeta = {
   mimeType: string;
 };
 
-type ConditionMode = "and" | "or";
+type UnlockConditionValue = 0 | 1 | 2;
+const UNLOCK_CONDITIONS: { value: UnlockConditionValue; label: string; desc: string }[] = [
+  { value: 0, label: "Time Only", desc: "Release after a specific time" },
+  { value: 1, label: "Payment Only", desc: "Release after payment" },
+  { value: 2, label: "Time + Payment", desc: "Both time and payment must pass" },
+];
 
 const TIME_PRESETS = [
   { label: "1 min", seconds: 60 },
@@ -48,7 +55,7 @@ function toDateTimeLocalValue(timestampMs: number): string {
 
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
 
-export function SecureFHEMessageForm({ onSubmitted }: Props) {
+export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
   const { address: userAddress, isConnected } = useAccount();
   const { chain } = useNetwork();
   const contractAddress = useContractAddress();
@@ -65,7 +72,9 @@ export function SecureFHEMessageForm({ onSubmitted }: Props) {
   const [unlockAt, setUnlockAt] = useState(() => toDateTimeLocalValue(Date.now() + 60_000));
   const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [paymentInput, setPaymentInput] = useState("");
-  const [conditionMode, setConditionMode] = useState<ConditionMode>("and");
+  const [unlockCondition, setUnlockCondition] = useState<UnlockConditionValue>(
+    timeEnabled && paymentEnabled ? 2 : timeEnabled ? 0 : 1
+  );
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -105,20 +114,18 @@ export function SecureFHEMessageForm({ onSubmitted }: Props) {
   }, [presetSeconds, timeEnabled, timeMode, unlockAt]);
 
   const conditionSummary = useMemo(() => {
-    const parts: string[] = [];
+    const cond = UNLOCK_CONDITIONS.find((c) => c.value === unlockCondition);
+    if (!cond) return "No unlock condition selected";
+    if (cond.value === 0) {
+      const selectedPreset = TIME_PRESETS.find((preset) => preset.seconds === presetSeconds);
+      return `Time Only (${timeMode === "preset" ? selectedPreset?.label ?? `${presetSeconds}s` : "custom"})`;
+    }
+    if (cond.value === 1) {
+      return `Payment Only (${paymentInput.trim() || "..."} ${nativeSymbol})`;
+    }
     const selectedPreset = TIME_PRESETS.find((preset) => preset.seconds === presetSeconds);
-
-    if (timeEnabled) {
-      parts.push(timeMode === "preset" ? `time (${selectedPreset?.label ?? `${presetSeconds}s`})` : "time");
-    }
-    if (paymentEnabled) {
-      parts.push(`payment${paymentInput.trim() ? ` (${paymentInput.trim()} ${nativeSymbol})` : ""}`);
-    }
-
-    if (parts.length === 0) return "No unlock condition selected";
-    if (parts.length === 1) return parts[0];
-    return `${parts[0]} ${conditionMode.toUpperCase()} ${parts[1]}`;
-  }, [conditionMode, nativeSymbol, paymentEnabled, paymentInput, presetSeconds, timeEnabled, timeMode]);
+    return `Time + Payment (time: ${timeMode === "preset" ? selectedPreset?.label ?? `${presetSeconds}s` : "custom"}, payment: ${paymentInput.trim() || "..."} ${nativeSymbol})`;
+  }, [unlockCondition, nativeSymbol, paymentInput, presetSeconds, timeEnabled, timeMode]);
 
   const isFormValid = useMemo(() => {
     if (!isConnected || !userAddress || !contractAddress) return false;
@@ -150,7 +157,7 @@ export function SecureFHEMessageForm({ onSubmitted }: Props) {
     setUnlockAt(toDateTimeLocalValue(Date.now() + 60_000));
     setPaymentEnabled(false);
     setPaymentInput("");
-    setConditionMode("and");
+    setUnlockCondition(0);
     if (fileInputRef.current) {
       fileInputRef.current.value = "";
     }
@@ -288,14 +295,15 @@ export function SecureFHEMessageForm({ onSubmitted }: Props) {
 
       const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
-      const contract = new ethers.Contract(contractAddress, sealedMessageFheSecureAbi, signer);
+      const formAbi = versionKey === "v5.1-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+      const contract = new ethers.Contract(contractAddress, formAbi, signer);
 
       setStatusMessage("Sending transaction to blockchain...");
       const tx = await contract.sendMessage(
         receiver as `0x${string}`,
         unlockTimestamp,
         paymentEnabled ? parsedPayment : 0n,
-        timeEnabled && paymentEnabled && conditionMode === "or" ? 1 : 0,
+        unlockCondition,
         payloadUpload.cid,
         metadataUpload.cid,
         previewCid,
@@ -321,14 +329,14 @@ export function SecureFHEMessageForm({ onSubmitted }: Props) {
     } finally {
       setIsSubmitting(false);
     }
-  }, [attachedFile, content, contractAddress, isFormValid, isSubmitting, onSubmitted, parsedPayment, paymentEnabled, receiver, resetForm, unlockTimestamp, uploadJson, userAddress]);
+  }, [attachedFile, content, contractAddress, isFormValid, isSubmitting, onSubmitted, parsedPayment, paymentEnabled, receiver, resetForm, unlockTimestamp, uploadJson, userAddress, versionKey]);
 
   return (
     <div className="w-full max-w-2xl mx-auto rounded-xl border border-emerald-500/30 bg-gray-900/80 p-6 backdrop-blur-sm">
       <h2 className="mb-5 flex items-center gap-2 text-xl font-bold text-white">
         <span>🛡️</span>
         Secure FHE Message
-        <span className="rounded bg-emerald-600/20 px-2 py-0.5 text-xs text-emerald-300">V5-FHE</span>
+        <span className="rounded bg-emerald-600/20 px-2 py-0.5 text-xs text-emerald-300">{versionKey === "v5.1-fhe" ? "V5.1-FHE" : "V5-FHE"}</span>
       </h2>
 
       <div className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-950/20 p-3 text-xs text-emerald-200">
@@ -424,27 +432,26 @@ export function SecureFHEMessageForm({ onSubmitted }: Props) {
             </div>
           )}
 
-          {timeEnabled && paymentEnabled && (
-            <div className="rounded-lg border border-amber-500/20 bg-amber-950/10 p-3">
-              <label className="mb-2 block text-sm text-amber-200">Unlock logic</label>
-              <div className="flex flex-wrap gap-2">
+          <div className="rounded-lg border border-emerald-700/20 bg-emerald-950/10 p-3">
+            <label className="mb-2 block text-sm text-emerald-200">Unlock condition</label>
+            <div className="flex flex-wrap gap-2">
+              {UNLOCK_CONDITIONS.map((cond) => (
                 <button
+                  key={cond.value}
                   type="button"
-                  onClick={() => setConditionMode("and")}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium ${conditionMode === "and" ? "border-amber-400 bg-amber-500/20 text-amber-100" : "border-gray-700 bg-gray-800 text-gray-300"}`}
+                  onClick={() => setUnlockCondition(cond.value)}
+                  disabled={cond.value === 0 ? !timeEnabled : cond.value === 1 ? !paymentEnabled : !timeEnabled || !paymentEnabled}
+                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                    unlockCondition === cond.value
+                      ? "border-emerald-400 bg-emerald-500/20 text-emerald-100"
+                      : "border-gray-700 bg-gray-800 text-gray-300 hover:border-emerald-500/50"
+                  } ${cond.value === 0 && !timeEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 1 && !paymentEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 2 && (!timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""}`}
                 >
-                  AND: time and payment must both pass
+                  {cond.label}
                 </button>
-                <button
-                  type="button"
-                  onClick={() => setConditionMode("or")}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium ${conditionMode === "or" ? "border-amber-400 bg-amber-500/20 text-amber-100" : "border-gray-700 bg-gray-800 text-gray-300"}`}
-                >
-                  OR: either time or payment can unlock
-                </button>
-              </div>
+              ))}
             </div>
-          )}
+          </div>
 
           <p className="text-xs text-gray-400">Active unlock rule: {conditionSummary}.</p>
         </div>

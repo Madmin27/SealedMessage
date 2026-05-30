@@ -162,6 +162,15 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     }
   }, [nativeDecimals]);
 
+  // ⏰ Time condition (optional)
+  const [timeConditionEnabled, setTimeConditionEnabled] = useState(true); // Default enabled
+  
+  // 💰 Payment condition (optional) — MUST be before parsedPaymentAmount useMemo (TDZ fix)
+  const [paymentAmount, setPaymentAmount] = useState<string>(""); // In wei (internal)
+  const [paymentEnabled, setPaymentEnabled] = useState(false);
+  const [paymentInputMode, setPaymentInputMode] = useState<"native" | "wei">("native"); // User-friendly input
+  const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Visible value
+
   const parsedPaymentAmount = useMemo(() => {
     if (!paymentAmount) {
       return 0n;
@@ -187,15 +196,6 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [presetDuration, setPresetDuration] = useState<number>(30); // 30 seconds default
   const [unlock, setUnlock] = useState<string>("");
   const [error, setError] = useState<string | null>(null);
-  
-  // ⏰ Time condition (optional)
-  const [timeConditionEnabled, setTimeConditionEnabled] = useState(true); // Default enabled
-  
-  // 💰 Payment condition (optional)
-  const [paymentAmount, setPaymentAmount] = useState<string>(""); // In wei (internal)
-  const [paymentEnabled, setPaymentEnabled] = useState(false);
-  const [paymentInputMode, setPaymentInputMode] = useState<"native" | "wei">("native"); // User-friendly input
-  const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Visible value
   const [receiverEncryptionKey, setReceiverEncryptionKey] = useState<string>("");
   const [receiverKeySource, setReceiverKeySource] = useState<"registered" | "fallback" | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false); // Prevent double submission

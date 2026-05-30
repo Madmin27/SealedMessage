@@ -6,8 +6,9 @@ import relativeTime from "dayjs/plugin/relativeTime";
 import { ethers } from "ethers";
 import { formatEther } from "viem";
 import { useAccount } from "../lib/wagmiCompat";
-import { useContractAddress } from "../lib/useContractAddress";
+import { useContractAddress, useContractVersion } from "../lib/useContractAddress";
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
+import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
 import { combineMessageKey, decryptBytesEnvelope, decryptJsonEnvelope, type EncryptedEnvelope } from "../lib/securePayload";
 import { decryptKeyPartsForUser } from "../lib/fheSecure";
 import { getFileTypeLabel, formatSizeShort } from "../lib/preview";
@@ -90,6 +91,10 @@ function base64ToBlobUrl(base64: string, mimeType: string): string {
 export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) {
   const { address: userAddress } = useAccount();
   const contractAddress = useContractAddress();
+  const versionKey = useContractVersion();
+  const isV51 = versionKey === "v5.1-fhe";
+  const abi = isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+  const versionBadge = isV51 ? "V5.1-FHE" : "V5-FHE";
   const [isWorking, setIsWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -183,11 +188,15 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const canUnlock = !access.isUnlocked && !access.isRevoked && access.isReadyToUnlock;
   const canDecrypt = isReceiver && access.isUnlocked && !access.isRevoked;
   const alreadyDecrypted = content !== null;
-  const logicLabel = summary.hasTimeCondition && summary.hasPaymentCondition
-    ? (summary.conditionMode === 1 ? "Time OR payment" : "Time AND payment")
-    : summary.hasTimeCondition
-      ? "Time"
-      : "Payment";
+  const logicLabel = isV51
+    ? (summary.conditionMode === 0 ? "Time"
+      : summary.conditionMode === 1 ? "Payment"
+      : "Time + Payment")
+    : summary.hasTimeCondition && summary.hasPaymentCondition
+      ? (summary.conditionMode === 1 ? "Time OR payment" : "Time AND payment")
+      : summary.hasTimeCondition
+        ? "Time"
+        : "Payment";
 
   const callContract = useCallback(async (method: "unlockMessage" | "payToUnlock" | "revokeMessage", value?: bigint) => {
     if (!contractAddress) return;
@@ -197,7 +206,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
     try {
       const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
-      const contract = new ethers.Contract(contractAddress, sealedMessageFheSecureAbi, signer);
+      const contract = new ethers.Contract(contractAddress, abi, signer);
       const tx = value !== undefined ? await contract[method](id, { value }) : await contract[method](id);
       await tx.wait();
       onChanged?.();
@@ -207,7 +216,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
     } finally {
       setIsWorking(false);
     }
-  }, [contractAddress, id, onChanged]);
+  }, [contractAddress, id, onChanged, abi]);
 
   const handleDecrypt = useCallback(async () => {
     if (!canDecrypt || !contractAddress || !userAddress) return;
@@ -217,7 +226,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
     try {
       const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
-      const contract = new ethers.Contract(contractAddress, sealedMessageFheSecureAbi, signer);
+      const contract = new ethers.Contract(contractAddress, abi, signer);
       const handles = await contract.getKeyHandles(id) as [`0x${string}`, `0x${string}`, `0x${string}`, `0x${string}`];
       const parts = await decryptKeyPartsForUser({
         contractAddress,
@@ -263,7 +272,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
     } finally {
       setIsWorking(false);
     }
-  }, [canDecrypt, contractAddress, id, saveToCache, summary.metadataCid, summary.payloadCid, userAddress]);
+  }, [canDecrypt, contractAddress, id, saveToCache, summary.metadataCid, summary.payloadCid, userAddress, abi]);
 
   const statusLabel = useMemo(() => {
     if (access.isRevoked) return "Revoked";
@@ -360,7 +369,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
       {/* ── Header row (always visible) ─────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="rounded bg-emerald-600/20 px-2 py-0.5 text-xs text-emerald-300">V5-FHE</span>
+          <span className="rounded bg-emerald-600/20 px-2 py-0.5 text-xs text-emerald-300">{versionBadge}</span>
           <span className="text-sm text-white">#{id.toString()}</span>
           {alreadyDecrypted && (
             <span className="text-xs text-purple-400">🔓 Decrypted</span>

@@ -1,21 +1,7 @@
 import { ethers } from "ethers";
 
-const SDK_DEFAULT_RELAYER_URL = "https://relayer.testnet.zama.org/v2";
-
-function normalizeRelayerUrl(rawUrl?: string): string {
-  const candidate = (rawUrl || SDK_DEFAULT_RELAYER_URL).trim();
-  const normalizedBase = candidate
-    .replace("relayer.testnet.zama.cloud", "relayer.testnet.zama.org")
-    .replace(/\/+$/, "");
-
-  if (/\/v[12]$/i.test(normalizedBase)) {
-    return normalizedBase;
-  }
-
-  return `${normalizedBase}/v2`;
-}
-
-const SECURE_RELAYER_URL = normalizeRelayerUrl(process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL);
+const SECURE_RELAYER_URL =
+  process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL ?? "https://relayer.testnet.zama.cloud";
 
 type FheInstance = {
   createEncryptedInput: (contractAddress: string, userAddress: string) => {
