@@ -1,12 +1,12 @@
 {
   "version": "v5.1-fhe",
   "contract": "SealedMessageFHE_v51",
-  "address": "0xB5872f328af09aCf34A60936839Ee91b9313D598",
+  "address": "0x604218f74c1bE61cf6042C4624B2e1de6907AA40",
   "network": "sepolia",
   "chainId": 11155111,
-  "deployer": "0xF6D39Dda8997407110264acEc6a24345834cB639",
-  "deployedAt": "2026-05-30T17:56:25.143Z",
-  "blockNumber": 10955861,
+  "deployer": "0xbB95625Fd1030390B08e8f51B033dc8Bec7E6CE6",
+  "deployedAt": "2026-05-30T20:07:14.253Z",
+  "blockNumber": 10956510,
   "gasUsed": "1845494",
   "compiler": "0.8.24+viaIR",
   "fhevm": true
