@@ -1,0 +1,13 @@
+{
+  "version": "v4-fhe",
+  "contract": "SealedMessageFHE",
+  "address": "0xfB1101BEBDa7168D5E43bE07537fC650AC8693d1",
+  "network": "fhevm",
+  "chainId": 11155111,
+  "deployer": "0xF6D39Dda8997407110264acEc6a24345834cB639",
+  "deployedAt": "2026-05-30T04:01:49.141Z",
+  "blockNumber": 10951708,
+  "gasUsed": "1572337",
+  "compiler": "0.8.24+viaIR",
+  "fhevm": true
+}

@@ -1,33 +1,36 @@
-// FHEVM SDK Helper — Zama FHE devnet için
-// Dinamik import kullanır (browser-only modül, SSR'da çalışmaz).
+// FHEVM SDK Helper — Zama FHE (Sepolia Zama FHEVM)
+// Uses dynamic import (browser-only module, doesn't work in SSR).
 export interface FHEEncryptedInput {
   value: `0x${string}`;
   proof: `0x${string}`;
 }
 
-// Lazy-loaded FHEVM instance (yalnızca browser'da)
-let _fhevmInstance: any = null;
+const ZAMA_RELAYER_URL =
+  process.env.NEXT_PUBLIC_ZAMA_RELAYER_URL || 'https://relayer.testnet.zama.cloud';
 
-async function getFHEVM(): Promise<any> {
+// Lazy-loaded createInstance factory
+let _fhevmCreateInstance: any = null;
+
+async function getCreateInstance(): Promise<any> {
   if (typeof window === 'undefined') {
     throw new Error('FHEVM is browser-only');
   }
-  if (_fhevmInstance) return _fhevmInstance;
+  if (_fhevmCreateInstance) return _fhevmCreateInstance;
   const { createInstance } = await import('@zama-fhe/relayer-sdk/web');
-  _fhevmInstance = createInstance;
-  return _fhevmInstance;
+  _fhevmCreateInstance = createInstance;
+  return _fhevmCreateInstance;
 }
 
 /**
- * Bir değeri FHE şifrele (euint64 olarak).
- * @param value Şifrelenecek değer (number)
+ * FHE encrypt a value (as euint64).
+ * @param value Value to encrypt (number | bigint)
  * @returns encrypted input (value + proof)
  */
 export async function encryptEuint64(value: bigint | number): Promise<FHEEncryptedInput> {
-  const createInstance = await getFHEVM();
+  const createInstance = await getCreateInstance();
   const instance = await createInstance({
-    rpcUrl: 'https://devnet.zama.ai',
-    chainId: 8009,
+    rpcUrl: ZAMA_RELAYER_URL,
+    chainId: 11155111, // Sepolia
   });
   const result = await instance.encrypt64(BigInt(value));
   return {
@@ -37,15 +40,15 @@ export async function encryptEuint64(value: bigint | number): Promise<FHEEncrypt
 }
 
 /**
- * Bir değeri FHE şifrele (euint256 olarak).
- * @param value Şifrelenecek bytes32 değeri (hex)
+ * FHE encrypt a value (as euint256).
+ * @param value Bytes32 value to encrypt (hex)
  * @returns encrypted input (value + proof)
  */
 export async function encryptEuint256(value: `0x${string}`): Promise<FHEEncryptedInput> {
-  const createInstance = await getFHEVM();
+  const createInstance = await getCreateInstance();
   const instance = await createInstance({
-    rpcUrl: 'https://devnet.zama.ai',
-    chainId: 8009,
+    rpcUrl: ZAMA_RELAYER_URL,
+    chainId: 11155111, // Sepolia
   });
   const result = await instance.encrypt256(value);
   return {
@@ -55,29 +58,41 @@ export async function encryptEuint256(value: `0x${string}`): Promise<FHEEncrypte
 }
 
 /**
- * FHE şifreli bir değeri deşifre et (relayer üzerinden).
- * @param encryptedHandle Akıllı kontrattan dönen handle (bytes32)
- * @returns Deşifre edilmiş değer (bigint)
+ * Decrypt an FHE-encrypted value (via relayer).
+ * @param encryptedHandle Handle returned from smart contract (bytes32)
+ * @returns Decrypted value (bigint)
  */
 export async function decryptToBigInt(encryptedHandle: `0x${string}`): Promise<bigint> {
-  const instance = await initFHEVM();
+  const createInstance = await getCreateInstance();
+  const instance = await createInstance({
+    rpcUrl: ZAMA_RELAYER_URL,
+    chainId: 11155111, // Sepolia
+  });
   const result = await instance.decrypt(encryptedHandle);
   return result;
 }
 
 /**
- * FHE şifreli bir 256-bit değeri deşifre et.
+ * Decrypt an FHE-encrypted 256-bit value.
  */
 export async function decryptToBytes32(encryptedHandle: `0x${string}`): Promise<`0x${string}`> {
-  const instance = await initFHEVM();
+  const createInstance = await getCreateInstance();
+  const instance = await createInstance({
+    rpcUrl: ZAMA_RELAYER_URL,
+    chainId: 11155111, // Sepolia
+  });
   const result = await instance.decrypt256(encryptedHandle);
   return result as `0x${string}`;
 }
 
 /**
- * FHE devnet public key'ini al.
+ * Get FHE public key (via relayer).
  */
 export async function getFHEPublicKey(): Promise<string> {
-  const instance = await initFHEVM();
+  const createInstance = await getCreateInstance();
+  const instance = await createInstance({
+    rpcUrl: ZAMA_RELAYER_URL,
+    chainId: 11155111, // Sepolia
+  });
   return instance.getPublicKey();
 }

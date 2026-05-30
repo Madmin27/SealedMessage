@@ -82,22 +82,5 @@
     },
     "blockExplorer": "https://testnet.arcscan.app",
     "faucet": "https://faucet.circle.com"
-  },
-  "zama": {
-    "id": 8009,
-    "name": "Zama FHEVM Devnet",
-    "network": "zama-devnet",
-    "testnet": true,
-    "nativeCurrency": {
-      "name": "Zama",
-      "symbol": "ZAMA",
-      "decimals": 18
-    },
-    "rpcUrls": {
-      "default": "https://devnet.zama.ai",
-      "public": "https://devnet.zama.ai"
-    },
-    "blockExplorer": "https://devnet.zama.ai/explorer",
-    "faucet": "https://faucet.zama.ai"
   }
 }

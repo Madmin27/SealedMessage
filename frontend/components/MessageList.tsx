@@ -32,16 +32,16 @@ interface MessageViewModel {
   content: string | null;
   isRead: boolean;
   isSent: boolean;
-  contractAddress?: string; // ✅ Hangi contract'tan geldiği
-  createdAt?: bigint; // Mesajın gönderilme zamanı
+  contractAddress?: string; // ✅ Which contract it came from
+  createdAt?: bigint; // Message sending time
   createdDate?: string | null;
-  transactionHash?: string; // İşlem hash'i (mesaj gönderilirken)
-  // V3 ödeme bilgileri
+  transactionHash?: string; // Transaction hash (when sending message)
+  // V3 payment information
   requiredPayment?: bigint;
   paidAmount?: bigint;
   conditionType?: number; // 0: TIME_LOCK, 1: PAYMENT
-  paymentTxHash?: string; // Ödeme yapıldığında transaction hash
-  // Dosya desteği
+  paymentTxHash?: string; // Transaction hash when payment is made
+  // File support
   contentType?: number; // 0: TEXT, 1: IPFS_HASH, 2: ENCRYPTED
   fileMetadata?: {
     name: string;
@@ -58,7 +58,7 @@ interface Toast {
   type: 'success' | 'info' | 'warning';
 }
 
-// Transaction hash'lerini event log'larından çek
+// Fetch transaction hashes from event logs
 async function fetchTransactionHashes(
   client: PublicClient,
   contractAddress: `0x${string}`,
@@ -77,15 +77,15 @@ async function fetchTransactionHashes(
       throw new Error("Required contract events are missing from ABI");
     }
 
-    // Son bloğu al
+    // Get latest block
     const latestBlock = await client.getBlockNumber();
     
-    // Son 10000 bloğu tara (yeni contract için yeterli)
-    // Daha eski mesajlar için gerekirse artırılabilir
+    // Scan last 10000 blocks (sufficient for new contract)
+    // Can be increased if needed for older messages
     const LOOKBACK_BLOCKS = 10000n;
     const startBlock = latestBlock > LOOKBACK_BLOCKS ? latestBlock - LOOKBACK_BLOCKS : 0n;
     
-    // Block range'i parçalara böl (Scroll Sepolia için max 5000 block)
+    // Split block range into chunks (max 5000 blocks for Scroll Sepolia)
     const BLOCK_CHUNK_SIZE = 5000n;
     const chunks: Array<{ from: bigint; to: bigint }> = [];
     
@@ -97,7 +97,7 @@ async function fetchTransactionHashes(
     }
 
 
-    // MessageStored event'lerini chunk chunk çek
+    // Fetch MessageStored events chunk by chunk
     for (const chunk of chunks) {
       try {
         const sentLogs = await client.getLogs({
@@ -107,7 +107,7 @@ async function fetchTransactionHashes(
           toBlock: chunk.to
         });
 
-        // MessageStored event'lerinden transaction hash'leri çıkar
+        // Extract transaction hashes from MessageStored events
         sentLogs.forEach((log: any) => {
           const messageId = log.args?.messageId?.toString();
           if (messageId && messageIds.some(id => id.toString() === messageId)) {
@@ -124,7 +124,7 @@ async function fetchTransactionHashes(
       }
     }
 
-    // MessagePaid event'lerini çek (ödeme yapılırken)
+    // Fetch MessagePaid events (when payment is made)
     for (const chunk of chunks) {
       try {
         const paymentLogs = await client.getLogs({
@@ -146,7 +146,7 @@ async function fetchTransactionHashes(
         });
         
       } catch (chunkErr) {
-        // MessagePaid event yoksa veya hata varsa (sessiz geç)
+        // If MessagePaid event doesn't exist or error (pass silently)
       }
     }
     
@@ -224,7 +224,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
     }
   }, [hiddenMessages]);
 
-  // Toast bildirimi göster
+  // Show toast notification
   const showToast = useCallback((message: string, type: 'success' | 'info' | 'warning' = 'info') => {
     const id = Date.now();
     setToasts(prev => [...prev, { id, message, type }]);
@@ -624,31 +624,31 @@ export function MessageList({ refreshKey }: MessageListProps) {
               // Filter by type
               if (filter === 'all') return true;
               
-              // Unread: Unlocked ve henüz okunmamış (sadece alıcılar için)
+              // Unread: Unlocked and not yet read (recipients only)
               if (filter === 'unread') return !item.isSent && item.unlocked && !item.isRead;
               
-              // Locked: Henüz unlock olmamış
+              // Locked: Not yet unlocked
               if (filter === 'locked') return !item.unlocked;
               
-              // Unlocked: Unlock olmuş
+              // Unlocked: Has been unlocked
               if (filter === 'unlocked') return item.unlocked;
               
-              // Pending: Time-locked ve süresi dolmamış (alıcı için)
+              // Pending: Time-locked and not expired (for recipient)
               if (filter === 'pending') {
                 return !item.isSent && !item.unlocked && item.conditionType === 0 && item.unlockTime > BigInt(Math.floor(Date.now() / 1000));
               }
               
-              // Paid: Payment-locked VE ödeme yapılmış (paidAmount > 0)
+              // Paid: Payment-locked AND payment made (paidAmount > 0)
               if (filter === 'paid') {
                 return item.conditionType === 1 && item.paidAmount && item.paidAmount > 0n;
               }
               
-              // Unpaid: Payment-locked ANCAK henüz ödeme yapılmamış
+              // Unpaid: Payment-locked BUT payment not yet made
               if (filter === 'unpaid') {
                 return item.conditionType === 1 && (!item.paidAmount || item.paidAmount === 0n);
               }
               
-              // Files: IPFS dosya içeren
+              // Files: Contains IPFS file
               if (filter === 'files') return item.contentType === 1;
               
               return true;
@@ -658,7 +658,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
               return Number(b.id) - Number(a.id);
             })
             .map((item, index) => {
-            // Safeguard: undefined değerleri kontrol et (0n geçerli!)
+            // Safeguard: Check undefined values (0n is valid!)
             if (item.id === undefined || item.unlockTime === undefined) {
               console.warn('⚠️ Invalid message item:', item);
               return null;
@@ -675,7 +675,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
                 isRead={item.isRead}
                 isSent={item.isSent}
                 index={index}
-                contractAddress={item.contractAddress} // ✅ Contract address geç
+                contractAddress={item.contractAddress} // ✅ Pass contract address
                 requiredPayment={item.requiredPayment}
                 paidAmount={item.paidAmount}
                 conditionType={item.conditionType}
@@ -693,7 +693,7 @@ export function MessageList({ refreshKey }: MessageListProps) {
                   // Save to localStorage
                   localStorage.setItem('hiddenMessages', JSON.stringify(Array.from(newHidden)));
                 }}
-                // onMessageRead kaldırıldı - mesaj okununca sayfayı yenilemesin
+                // onMessageRead removed - don't refresh page when message is read
               />
             );
           })}

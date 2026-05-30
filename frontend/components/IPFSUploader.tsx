@@ -23,12 +23,12 @@ export function IPFSUploader({ onUploadComplete, onError }: IPFSUploaderProps) {
     setUploading(true);
     
     try {
-      // Pinata (ücretsiz IPFS pinning servisi) kullanacağız
+      // Pinata (free IPFS pinning service) will be used
       // Alternatif: web3.storage, nft.storage, Infura IPFS
       const formData = new FormData();
       formData.append("file", file);
 
-      // Pinata API kullanımı (ücretsiz plan: 1GB)
+      // Pinata API usage (free plan: 1GB)
       const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
       const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
 

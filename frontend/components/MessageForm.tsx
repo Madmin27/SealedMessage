@@ -1200,7 +1200,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       setThumbnailData(null);
     }
 
-    // IPFS'e yükle
+    // Upload to IPFS
     await uploadToIPFS(file);
   };
   
@@ -1208,7 +1208,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const uploadPreviewToIPFS = async (base64Data: string, mimeType?: string) => {
     setIsUploadingPreview(true);
     try {
-      // Base64'ü blob'a çevir
+      // Convert base64 to blob
       const response = await fetch(base64Data);
       const blob = await response.blob();
       const inferredType = mimeType || blob.type || "image/png";
@@ -1266,7 +1266,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     setError(null);
     
     try {
-      // Pinata ücretsiz IPFS servisi
+      // Pinata free IPFS service
       const formData = new FormData();
       formData.append("file", file);
       
@@ -1327,7 +1327,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     setPreviewIpfsHash("");
     setMetadataKeccak(null);
     setContentType(0); // TEXT
-    setContent(""); // İçeriği temizle
+    setContent(""); // Clear content
     setAttachmentPreview(null);
     setAttachmentPreviewMime("");
     if (fileInputRef.current) {
@@ -1437,7 +1437,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const shortMessage = (prepareError as any).shortMessage || prepareError.message;
       setError(
         shortMessage
-          ? `⛔ On-chain simülasyon başarısız: ${shortMessage}`
+          ? `⛔ On-chain simulation failed: ${shortMessage}`
           : "⛔ On-chain simulation failed. Please try again in a few seconds."
       );
     }
@@ -1452,7 +1452,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     hash: data?.hash 
   });
 
-  // UTC ve local time gösterimi
+  // Display UTC and local time
   const unlockTimeDisplay = useMemo(() => {
     if (!mounted) return { local: "", utc: "", relative: "", selected: "" };
     
@@ -2090,7 +2090,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             type="button"
             onClick={() => {
               setUnlockMode("custom");
-              setIsPresetsOpen(false); // Custom'a geçince preset'leri kapat
+              setIsPresetsOpen(false); // Close presets when switching to custom
             }}
             className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition ${
               unlockMode === "custom"
@@ -2125,7 +2125,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                 onClick={() => {
                   setPresetDuration(value);
                   setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + value);
-                  setIsPresetsOpen(false); // Dropdown'ı kapat
+                  setIsPresetsOpen(false); // Close dropdown
                 }}
                 className={`rounded-lg px-3 py-2 text-sm transition ${
                   presetDuration === value
@@ -2150,10 +2150,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
               className="w-full rounded-lg border border-cyber-blue/40 bg-midnight/60 px-4 py-3 text-text-light outline-none transition focus:border-neon-orange focus:ring-2 focus:ring-neon-orange/60"
             />
             
-            {/* Timezone Seçici */}
+            {/* Timezone Selector */}}
             <div className="flex flex-col gap-2">
               <label htmlFor="timezone" className="text-xs font-medium text-text-light/60">
-                🌐 Saat Dilimi (Timezone)
+                🌐 Timezone
               </label>
               <select
                 id="timezone"
@@ -2162,15 +2162,15 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                 className="rounded-lg border border-slate-700 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-neon-orange focus:ring-2 focus:ring-neon-orange/60"
               >
                 <optgroup label="🇹🇷 Turkey">
-                  <option value="Europe/Istanbul">İstanbul (UTC+3)</option>
+                  <option value="Europe/Istanbul">Istanbul (UTC+3)</option>
                 </optgroup>
-                <optgroup label="🇪🇺 Avrupa">
+                <optgroup label="🇪🇺 Europe">
                   <option value="Europe/London">London (UTC+0)</option>
                   <option value="Europe/Paris">Paris (UTC+1)</option>
                   <option value="Europe/Berlin">Berlin (UTC+1)</option>
                   <option value="Europe/Moscow">Moscow (UTC+3)</option>
                 </optgroup>
-                <optgroup label="🇺🇸 Amerika">
+                <optgroup label="🇺🇸 America">
                   <option value="America/New_York">New York (UTC-5)</option>
                   <option value="America/Chicago">Chicago (UTC-6)</option>
                   <option value="America/Denver">Denver (UTC-7)</option>

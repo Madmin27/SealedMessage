@@ -12,7 +12,7 @@ export function VersionSwitcher() {
   const chainId = chain?.id;
   const availableVersions = useMemo(() => getAvailableVersions(chainId), [getAvailableVersions, chainId]);
   const currentVersion = chainId ? getSelectedVersion(chainId) : undefined;
-  const currentLabel = chainId ? getSelectedVersionLabel(chainId) : "Versiyon seçin";
+  const currentLabel = chainId ? getSelectedVersionLabel(chainId) : "Select version";
 
   const [isOpen, setIsOpen] = useState(false);
 
@@ -26,7 +26,7 @@ export function VersionSwitcher() {
     [chainId, selectVersion]
   );
 
-  // Sadece bir versiyon varsa dropdown göstermeye gerek yok
+  // No need to show dropdown if only one version
   if (availableVersions.length <= 1) {
     return null;
   }
@@ -55,7 +55,7 @@ export function VersionSwitcher() {
 
       {isOpen && (
         <>
-          {/* Arkaplan tıkla-kapat */}
+          {/* Background click-close */}
           <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
 
           <div className="absolute right-0 z-20 mt-2 w-72 origin-top-right rounded-lg border border-gray-600 bg-gray-800 shadow-xl">

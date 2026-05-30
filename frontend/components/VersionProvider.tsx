@@ -14,13 +14,13 @@ export interface VersionOption {
 }
 
 export interface VersionContextValue {
-  /** Seçili zincir için aktif versiyonu döndürür */
+  /** Returns the active version for the selected chain */
   getSelectedVersion: (chainId?: number) => string | undefined;
-  /** Bir zincir için versiyon seçer (localStorage'a kaydeder) */
+  /** Selects a version for a chain (saves to localStorage) */
   selectVersion: (chainId: number, versionKey: string) => void;
-  /** Bir zincir için kullanılabilir versiyonları döndürür */
+  /** Returns available versions for a chain */
   getAvailableVersions: (chainId?: number) => VersionOption[];
-  /** Aktif zincir için seçili versiyon etiketini döndürür */
+  /** Returns the selected version label for the active chain */
   getSelectedVersionLabel: (chainId?: number) => string;
 }
 
@@ -29,7 +29,7 @@ export interface VersionContextValue {
 // ========================================
 
 const DEFAULT_VERSIONS: Record<number, string> = {
-  8009: "v4-fhe", // Zama FHEVM — default FHE
+  11155111: "v4-fhe", // Sepolia-backed Zama FHEVM defaults to FHE
 };
 
 // ========================================
@@ -38,14 +38,14 @@ const DEFAULT_VERSIONS: Record<number, string> = {
 
 const ALL_VERSIONS: VersionOption[] = [
   { key: "v3", label: "V3 — SealedMessage", description: "Original (ECDH+AES-256-GCM)", isFHE: false },
-  { key: "v4-fhe", label: "V4-FHE — SealedMessageFHE", description: "FHE-encrypted (Zama FHEVM)", isFHE: true },
+  { key: "v4-fhe", label: "V4-FHE — SealedMessageFHE", description: "FHE-encrypted (Zama FHEVM on Sepolia)", isFHE: true },
 ];
 
 // ========================================
-// FHE-only chains (sadece FHE versiyonu desteklenir)
+// FHE-only chains (only FHE version supported)
 // ========================================
 
-const FHE_ONLY_CHAINS: number[] = [8009];
+const FHE_ONLY_CHAINS: number[] = [11155111];
 
 // ========================================
 // LocalStorage helpers
@@ -65,7 +65,7 @@ function setStoredVersion(chainId: number, version: string): void {
   try {
     localStorage.setItem(`${STORAGE_KEY_PREFIX}${chainId}`, version);
   } catch {
-    // localStorage dolu olabilir, sessizce başarısız ol
+    // localStorage may be full, silently fail
   }
 }
 
@@ -91,15 +91,15 @@ const VersionContext = createContext<VersionContextValue>({
 export function VersionProvider({ children }: PropsWithChildren) {
   const [versionMap, setVersionMap] = useState<Record<number, string>>({});
 
-  // Client-side mount — localStorage'dan yükle
+  // Client-side mount — load from localStorage
   useEffect(() => {
     const loaded: Record<number, string> = {};
-    // Tüm zincirler için varsayılanları yükle
-    for (const chainId of Object.keys(DEFAULT_VERSIONS).concat("8009").map(Number)) {
+    // Load defaults for all chains
+    for (const chainId of Object.keys(DEFAULT_VERSIONS).map(Number)) {
       const stored = getStoredVersion(chainId);
       loaded[chainId] = stored ?? DEFAULT_VERSIONS[chainId] ?? "v3";
     }
-    // Varsayılan olmayan zincirleri de kontrol et
+    // Also check non-default chains
     for (const key of Object.keys(localStorage)) {
       if (key.startsWith(STORAGE_KEY_PREFIX)) {
         const chainId = parseInt(key.replace(STORAGE_KEY_PREFIX, ""), 10);
@@ -114,10 +114,10 @@ export function VersionProvider({ children }: PropsWithChildren) {
   const getSelectedVersion = useCallback(
     (chainId?: number): string | undefined => {
       if (!chainId) return undefined;
-      // Önce map'ten dene
+      // First try from map
       const mapped = versionMap[chainId];
       if (mapped) return mapped;
-      // Yoksa varsayılanı dene
+      // Otherwise try default
       return DEFAULT_VERSIONS[chainId] ?? "v3";
     },
     [versionMap]

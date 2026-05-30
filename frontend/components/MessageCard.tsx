@@ -31,17 +31,17 @@ interface MessageCardProps {
   isRead: boolean;
   isSent: boolean;
   index: number;
-  contractAddress?: string; // ✅ Mesajın hangi contract'tan geldiği (override için)
+  contractAddress?: string; // ✅ Which contract the message came from (for override)
   onMessageRead?: () => void;
   onHide?: () => void; // Hide message callback
-  // V3 ödeme bilgileri
+  // V3 payment information
   requiredPayment?: bigint;
   paidAmount?: bigint;
   conditionType?: number;
   // Transaction hash'leri
   transactionHash?: string;
   paymentTxHash?: string;
-  // Dosya desteği
+  // File support
   contentType?: number; // 0=TEXT, 1=IPFS_HASH, 2=ENCRYPTED
   fileMetadata?: {
     name: string;
@@ -548,7 +548,7 @@ export function MessageCard({
   }, [messageChainKey, messageChainId, userAddress]);
   const [prefetchedHandle, setPrefetchedHandle] = useState<unknown | null>(null);
   
-  // ✅ Props'tan gelen varsa onu kullan, yoksa hook'tan gelenı kullan
+  // ✅ Use props if available, otherwise use from hook
   const resolvedContractAddress = useMemo(() => {
     if (propsContractAddress && propsContractAddress !== ZERO_ADDRESS) {
       return propsContractAddress as `0x${string}`;
@@ -564,7 +564,7 @@ export function MessageCard({
   }, [propsContractAddress, messageChainConfig, hookContractAddress]);
   const contractAddress = resolvedContractAddress;
   
-  // 🔑 Cache key: contract address bazlı (eski contract'larla karışmasın)
+  // 🔑 Cache key: based on contract address (to avoid mixing with old contracts)
   const cacheKey = useMemo(() => {
     if (contractAddress) {
       const prefix = contractAddress.slice(0, 10);
@@ -576,7 +576,7 @@ export function MessageCard({
     return "msg";
   }, [contractAddress, messageChainId]);
   
-  // localStorage'dan initial state yükle (basit key, sonra cacheKey ile güncellenecek)
+  // Load initial state from localStorage (simple key, then updated with cacheKey)
   const [messageContent, setMessageContent] = useState<string | null>(null);
   const [activeSessionKey, setActiveSessionKey] = useState<Uint8Array | null>(null);
   const [fileMetadataState, setFileMetadataState] = useState<any>(null);
@@ -665,7 +665,7 @@ export function MessageCard({
   const [previewPollingDisabled, setPreviewPollingDisabled] = useState(false);
   const [sentPreviewInfo, setSentPreviewInfo] = useState<SentPreviewCache | null>(null);
   
-  // ✅ YENİ: Payment bilgisi state
+  // ✅ Payment info state
   const [requiredPaymentAmount, setRequiredPaymentAmount] = useState<bigint | null>(null);
   const [paidAmountOnchain, setPaidAmountOnchain] = useState<bigint | null>(null);
 
@@ -707,7 +707,7 @@ export function MessageCard({
     metadataReadyRef.current = true;
   }, [isSent, conditionType, requiredPayment, paidAmount, unlocked]);
 
-  // 🔄 localStorage'dan cache'i yükle (cacheKey hazır olduğunda)
+  // 🔄 Load cache from localStorage (when cacheKey is ready)
   useEffect(() => {
     if (typeof window === 'undefined' || !cacheKey) return;
     
@@ -869,7 +869,7 @@ export function MessageCard({
     };
   }, [unlockTime, ensureOnchainUnlocked, isSent]);
 
-  // ✅ Ödeme bilgisi artık getMessageFinancialView üzerinden geliyor; ayrı bir fetch yok
+  // ✅ Payment info now comes from getMessageFinancialView; no separate fetch needed
   useEffect(() => {
     if (!metadataLoaded) {
       setIsLoadingPaymentInfo(true);
@@ -1291,12 +1291,12 @@ export function MessageCard({
     activeSessionKey
   ]);
 
-  // Preview metadata fetch et (mesaj card render edildiğinde)
+  // Fetch preview metadata (when message card is rendered)
   useEffect(() => {
     void fetchPreviewMetadata();
   }, [fetchPreviewMetadata]);
 
-  // ✅ Component mount olduğunda metadata'yı hemen yükle
+  // ✅ Load metadata immediately when component mounts
   useEffect(() => {
     if (isSent) return;
     void ensureOnchainUnlocked();
@@ -2192,7 +2192,7 @@ export function MessageCard({
               setFileMetadataState({
                 error: true,
                 requiresSessionKey: true,
-                message: 'Session anahtarı hazır değil. Mesajı tekrar açmayı deneyin.',
+                message: 'Session key is not ready. Try opening the message again.',
                 shortHash
               });
               setIsLoadingFileMetadata(false);
@@ -2238,18 +2238,18 @@ export function MessageCard({
     fetchFileMetadata();
   }, [messageContent, fileMetadataState, activeSessionKey, cacheKey]);
   
-  // Artık sadece Sealed kullanıyoruz
+  // Now using only Sealed
   const isSealedContract = true;
   
   // Sadece Sealed ABI kullan
   const selectedAbi = sealedMessageAbi;
   
-  // Eğer mesaj zaten okunmuşsa (isRead: true), direkt içeriği yükle
+  // If message is already read (isRead: true), load content directly
   useEffect(() => {
     const loadContentIfRead = async () => {
       if (!isRead || isSent || !localUnlocked || !client || !userAddress || !contractAddress) return;
       
-      // ✅ Cache'de varsa hiçbir şey yapma (state'te zaten yüklü)
+      // ✅ If in cache, do nothing (already loaded in state)
       if (messageContent) {
         return;
       }
@@ -2904,13 +2904,13 @@ export function MessageCard({
     </div>
   );
 
-  // ✅ getMessage transaction - payment desteği ile (usePrepareContractWrite)
+  // ✅ getMessage transaction - with payment support (usePrepareContractWrite)
   const { config: preparedReadConfig, error: prepareReadError, status: prepareReadStatus } = usePrepareContractWrite({
     address: contractAddress,
     abi: sealedMessageAbi,
-    functionName: "getMessage" as any, // TODO: view function, write olmamalı
+    functionName: "getMessage" as any, // TODO: should be a view function, not write
     args: [id],
-    // Sealedn kilidi açılmışsa veya ödeme gereği varsa (ve miktar biliniyorsa) hazırlansın
+    // Prepare if Sealed is unlocked or payment is required (and amount is known)
     enabled: canPrepareRead,
     chainId: activeChainId,
     account: userAddress as `0x${string}` | undefined,
@@ -2927,21 +2927,21 @@ export function MessageCard({
   const { isLoading: isConfirming, isSuccess } = useWaitForTransaction({
     hash: txData?.hash
   });
-  // Transaction başarılı olunca içeriği çek
+  // Fetch content when transaction succeeds
   useEffect(() => {
     if (!isSuccess || !client || !userAddress || !contractAddress) return;
     const fetchContent = async () => {
       setIsLoadingContent(true);
       setDecryptError(null);
-      // Kısa bekleme (ACL ve state)
+      // Brief wait (ACL and state)
   await new Promise((resolve) => setTimeout(resolve, 2000));
   await ensureOnchainUnlocked();
 
   let handleValue: unknown = prefetchedHandle;
       try {
         const needsPayment = (conditionMask & 0x02) !== 0;
-        // Eğer ödeme gereksinimi varsa ve prefetched yoksa, yine de bir kez dene:
-        // Ödeme "claimed" olduktan sonra sözleşme state’indeki engel kalkmış olabilir.
+        // If payment is required and prefetched is missing, try once more:
+        // After payment is "claimed", the contract state restriction may have been lifted.
         if (handleValue == null) {
           const handle = await client.readContract({
             address: contractAddress,
@@ -2978,7 +2978,7 @@ export function MessageCard({
     fetchContent();
   }, [isSuccess, client, id, onMessageRead, userAddress, contractAddress, decryptCiphertext, prefetchedHandle, cacheKey]);
 
-  // Payment success olduğunda içeriği yükle
+  // Load content when payment succeeds
   useEffect(() => {
     const fetchContentAfterPayment = async () => {
   if (!isPaymentSuccess || !client || !userAddress || !contractAddress) return;
@@ -3026,13 +3026,13 @@ export function MessageCard({
         setMessageContent(decrypted);
         setIsExpanded(true);
         
-        // localStorage cache (payment sonrası)
+        // localStorage cache (post-payment)
         localStorage.setItem(`${cacheKey}-content-${id}`, decrypted);
         localStorage.setItem(`${cacheKey}-read-${id}`, 'true');
         localStorage.setItem(`${cacheKey}-expanded-${id}`, 'true');
         localStorage.setItem(`${cacheKey}-unlocked-${id}`, 'true');
         
-        onMessageRead?.(); // Parent'ı bilgilendir
+        onMessageRead?.(); // Notify parent
       } catch (err) {
         console.error("❌ Content could not be fetched after payment:", err);
         const fallback = ciphertext != null ? String((ciphertext as any)?.toString?.() ?? ciphertext) : "⚠️ Content could not be loaded";
@@ -3061,7 +3061,7 @@ export function MessageCard({
       return;
     }
 
-    // ✅ Metadata yüklenmediyse, hemen yükle ve bekle
+    // ✅ If metadata not loaded, load immediately and wait
     if (!metadataReadyRef.current) {
       setDecryptError("Message info is loading...");
       const unlocked = await ensureOnchainUnlocked();
@@ -3131,7 +3131,7 @@ export function MessageCard({
       return;
     }
 
-    // Ödeme gerekiyorsa prepared value kontrolü
+    // Check prepared value if payment is required
   const needsPayment = shouldAttachPayment;
     const preparedValue = preparedRequest?.value as bigint | undefined;
     if (needsPayment) {
@@ -3142,7 +3142,7 @@ export function MessageCard({
         return;
       }
 
-      // ÖNCE simulate ile handle'ı al (state değişmeden, payment koşulu ile)
+      // FIRST get handle via simulate (without state change, with payment condition)
       try {
         if (!client || !userAddress || !contractAddress) throw new Error('Missing client/account/address');
         const sim = await client.simulateContract({
@@ -3254,7 +3254,7 @@ export function MessageCard({
       `}
     >
       <div className="space-y-3">
-        {/* Başlık: Mesaj ID ve Koşul Tipi */}
+        {/* Header: Message ID and Condition Type */}
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <div className="text-xs font-mono text-slate-400">#{id.toString()}</div>
@@ -3296,12 +3296,12 @@ export function MessageCard({
             <p className="text-sm font-semibold text-blue-300 mb-1">📤 Receiver</p>
             <p className="font-mono text-xs text-slate-300 break-all">{receiver}</p>
             
-            {/* Dosya indicator - gönderici tarafı */}
+            {/* File indicator - sender side */}
             {(() => {
               try {
                 const cached = localStorage.getItem(`${cacheKey}-content-${id}`);
                 if (cached && cached.startsWith('F:')) {
-                  // Short hash'ten full hash'i bul
+                  // Find full hash from short hash
                   const shortHash = cached.substring(2, 8);
                   const fullHash = localStorage.getItem(`file-metadata-${shortHash}`);
                   return (
@@ -3320,7 +3320,7 @@ export function MessageCard({
               <span>🔒</span> Only receiver can view
             </p>
 
-            {/* Decrypt edilen gerçek mesaj içeriği - gönderen de görebilir */}
+            {/* Decrypted actual message content - sender can also see */}
             {isLoadingContent ? (
               <div className="mt-3 rounded-lg border border-blue-400/40 bg-blue-900/20 p-3">
                 <div className="text-slate-400 italic flex items-center gap-2">
@@ -3472,7 +3472,7 @@ export function MessageCard({
             </div>
           )}
           
-          {/* Transaction Hash - Mesaj gönderimi */}
+          {/* Transaction Hash - Message submission */}
           {transactionHash && (
             <div className="mt-3 pt-3 border-t border-slate-700/50">
               <div className="flex items-start gap-2 text-xs">
@@ -3490,7 +3490,7 @@ export function MessageCard({
             </div>
           )}
           
-          {/* Payment Transaction Hash - Ödeme yapıldıysa */}
+          {/* Payment Transaction Hash - If payment was made */}
           {paymentTxHash && (
             <div className="mt-2 pt-2 border-t border-slate-700/50">
               <div className="flex items-start gap-2 text-xs">
@@ -3521,7 +3521,7 @@ export function MessageCard({
       `}>
         {summarySection}
         
-        {/* 🔐 Unlock Button - Kilitli mesajlar için */}
+        {/* 🔐 Unlock Button - For locked messages */}
         {!isSent && !localUnlocked && (
           <div className="mb-4 space-y-2">
             {shouldAttachPayment ? (
@@ -3628,12 +3628,12 @@ export function MessageCard({
               <span>🚫</span> You cannot view the message you sent.
             </p>
             
-            {/* Dosya indicator - gönderici tarafı */}
+            {/* File indicator - sender side */}
             {(() => {
               try {
                 const cached = localStorage.getItem(`${cacheKey}-content-${id}`);
                 if (cached && cached.startsWith('F:')) {
-                  // Short hash'ten full hash'i bul
+                  // Find full hash from short hash
                   const shortHash = cached.substring(2, 8);
                   const fullHash = localStorage.getItem(`file-metadata-${shortHash}`);
                   return (
@@ -3651,12 +3651,12 @@ export function MessageCard({
         ) : localUnlocked ? (
           <div className="space-y-2">
             {localIsRead && !messageContent && isLoadingContent ? (
-              // Okunan mesaj yükleniyor
+              // Read message is loading
               <div className="text-slate-400 italic flex items-center gap-2">
                 <span className="animate-spin">⟳</span> Loading content...
               </div>
             ) : !localIsRead ? (
-              // Henüz okunmamış, uyarı + butonu göster
+              // Not read yet, show warning + button
               <>
                 {/* File warning - Unlocked but not read yet */}
                 {contentType === 1 && (
@@ -3703,10 +3703,10 @@ export function MessageCard({
                 </button>
               </>
             ) : messageContent ? (
-              // İçerik yüklenmiş, göster
+              // Content loaded, display it
               <div className="space-y-2">
                 {messageContent.startsWith('FILE:') || messageContent.startsWith('F:') ? (
-                  // Dosya metadata göster
+                  // Show file metadata
                   isLoadingFileMetadata ? (
                     <div className="text-slate-400 italic flex items-center gap-2">
                       <span className="animate-spin">⟳</span> Loading file metadata...
@@ -3742,7 +3742,7 @@ export function MessageCard({
                                         setFileMetadataState({
                                           error: true,
                                           requiresSessionKey: true,
-                                          message: 'Session anahtarı olmadan metadata çözülemedi.',
+                                          message: 'Cannot resolve metadata without session key.',
                                           shortHash: sh
                                         });
                                         setIsLoadingFileMetadata(false);
@@ -3775,7 +3775,7 @@ export function MessageCard({
                                         }
                                       }
                                     } else {
-                                      setFileMetadataState({ error: true, message: 'Metadata boş döndü', shortHash: sh });
+                                      setFileMetadataState({ error: true, message: 'Metadata returned empty', shortHash: sh });
                                     }
                                   } else {
                                     setFileMetadataState({ error: true, message: 'Resolved but fetch failed' });
@@ -3874,7 +3874,7 @@ export function MessageCard({
                             </div>
                           </div>
                           
-                          {/* Resim önizlemesi */}
+                          {/* Image preview */}
                           {isImageAttachment ? (
                             resolvedImageSrc ? (
                               <div className="pt-3 border-t border-purple-400/30">
@@ -3917,7 +3917,7 @@ export function MessageCard({
                             </div>
                           )}
                           
-                          {/* İndirme Butonu */}
+                          {/* Download Button */}
                           <div className="pt-3 border-t border-purple-400/30">
                             {resolvedDownloadUrl ? (
                               <>

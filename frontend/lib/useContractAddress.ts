@@ -4,7 +4,7 @@ import { useVersioning } from "../components/VersionProvider";
 
 /**
  * Hook to get the active SealedMessage contract address for the current network.
- * Version-aware: kullanıcının seçtiği versiyona göre FHE veya orijinal kontrat adresini döndürür.
+ * Version-aware: returns the FHE or original contract address based on the user's selected version.
  */
 export function useContractAddress(): `0x${string}` | undefined {
   const { chain } = useNetwork();

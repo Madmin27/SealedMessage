@@ -125,7 +125,7 @@ async function fetchIpfsPayload(uri: string) {
 	if (ipfsHash.toLowerCase().includes("stub")) {
 		return {
 			stub: true,
-			decrypted: "🎉 Bu bir test mesajıdır. Şifreleme henüz aktif değilken kullanılan stub içerik.",
+			decrypted: "🎉 This is a test message. Stub content used while encryption is not yet active.",
 			binary: new Uint8Array(0),
 			text: null
 		};

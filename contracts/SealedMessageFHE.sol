@@ -10,10 +10,12 @@ pragma solidity ^0.8.24;
 ///      compatibility. Users switch versions via the frontend's VersionSwitcher.
 ///      Forbidden patterns: NO @fhevm-js/relayer, NO @fhenixprotocol, NO allowForDecryption,
 ///      NO requestDecryption, NO FHE ops in view/pure.
-import {FHE, euint64, ebool} from "@fhevm/solidity/lib/FHE.sol";
-import {externalEuint64} from "encrypted-types/EncryptedTypes.sol";
+import {FHE, euint64, ebool, externalEuint64} from "@fhevm/solidity/lib/FHE.sol";
+import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
-contract SealedMessageFHE {
+/// @notice Inherits ZamaEthereumConfig to auto-configure FHEVM coprocessor addresses
+///         for Sepolia (chainId 11155111) via constructor.
+contract SealedMessageFHE is ZamaEthereumConfig {
     // ──────────────────────────────────────────────
     // Constants
     // ──────────────────────────────────────────────
