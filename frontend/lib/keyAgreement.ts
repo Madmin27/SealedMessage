@@ -116,7 +116,7 @@ export function clearStoredEncryptionKey(address: string) {
 }
 
 export function generateFallbackKeyPair(receiverAddress: string): FallbackKeyPair {
-  const seed = process.env.NEXT_PUBLIC_FALLBACK_SEED || 'default-fallback-seed';
+  const seed = 'sealed-message-legacy-fallback-domain';
   const normalized = normalizeAddress(receiverAddress);
   const combined = `${seed}|${normalized}|fallback-v1`;
   const hash = ethers.keccak256(ethers.toUtf8Bytes(combined));

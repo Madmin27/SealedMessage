@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { pinFileToIpfs } from "../lib/ipfsClient";
 
 interface IPFSUploaderProps {
   onUploadComplete: (hash: string) => void;
@@ -23,36 +24,10 @@ export function IPFSUploader({ onUploadComplete, onError }: IPFSUploaderProps) {
     setUploading(true);
     
     try {
-      // Pinata (free IPFS pinning service) will be used
-      // Alternatif: web3.storage, nft.storage, Infura IPFS
-      const formData = new FormData();
-      formData.append("file", file);
+      const data = await pinFileToIpfs({ file });
+      const ipfsHash = data.IpfsHash;
 
-      // Pinata API usage (free plan: 1GB)
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-
-      if (!pinataApiKey || !pinataSecretKey) {
-        throw new Error("IPFS credentials not configured");
-      }
-
-      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-        method: "POST",
-        headers: {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey,
-        },
-        body: formData,
-      });
-
-      if (!response.ok) {
-        throw new Error(`Upload failed: ${response.statusText}`);
-      }
-
-  const data = await response.json();
-  const ipfsHash = data.IpfsHash;
-
-  onUploadComplete(ipfsHash);
+      onUploadComplete(ipfsHash);
 
       return ipfsHash;
     } catch (error) {

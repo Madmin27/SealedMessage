@@ -8,10 +8,9 @@
     "outDir": "dist",
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["node", "hardhat", "mocha", "chai"]
-    ,"baseUrl": ".",
+    "types": ["node", "hardhat", "mocha", "chai"],
     "paths": {
-      "config/*": ["config/*"]
+      "config/*": ["./config/*"]
     }
   },
   "include": ["hardhat.config.ts", "scripts", "test", "typechain-types", "config"]

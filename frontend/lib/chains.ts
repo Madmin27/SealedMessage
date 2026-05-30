@@ -36,7 +36,9 @@ const CONTRACT_ADDRESSES: Record<string, string | undefined> = {
 
 // FHE contract addresses (SealedMessageFHE.sol) — separate per chain
 const FHE_CONTRACT_ADDRESSES: Record<string, string | undefined> = {
-  sepolia: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_SEPOLIA,
+  sepolia:
+    process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_SEPOLIA ??
+    process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_ZAMA,
   baseSepolia: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_BASE_SEPOLIA,
   scrollSepolia: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_SCROLL_SEPOLIA,
   incentiv: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_INCENTIV,

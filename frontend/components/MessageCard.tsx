@@ -17,6 +17,7 @@ import { MessagePreview, AttachmentBadge } from "./MessagePreview";
 import { MessagePreviewData } from "@/types/message";
 import { formatUnits, keccak256 } from "viem";
 import { aesGcmDecryptMessage } from "../lib/encryption";
+import { searchPinnedFiles } from "../lib/ipfsClient";
 
 dayjs.extend(duration);
 dayjs.extend(relativeTime);
@@ -1924,24 +1925,9 @@ export function MessageCard({
       console.warn('Probe via proxy failed:', e);
     }
 
-    // 2) Try Pinata keyvalue search (if keys present)
+    // 2) Try backend Pinata keyvalue search
     try {
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-      if (!pinataApiKey || !pinataSecretKey) return null;
-
-      const headers: Record<string, string> = {
-        pinata_api_key: pinataApiKey,
-        pinata_secret_api_key: pinataSecretKey,
-        Accept: 'application/json'
-      };
-
-      const params = new URLSearchParams({ status: 'pinned', pageLimit: '5' });
-      params.append('hashContains', shortHash);
-      const res = await fetch(`https://api.pinata.cloud/data/pinList?${params.toString()}`, { headers });
-      if (!res.ok) return null;
-      const json = await res.json();
-      const rows: any[] = json?.rows ?? [];
+      const rows = await searchPinnedFiles({ hashContains: shortHash, pageLimit: 5 });
       const match = rows.find((r) => r?.metadata?.keyvalues?.shortHash === shortHash || (r?.metadata?.name || '').toLowerCase().includes('meta'));
       if (match?.ipfs_pin_hash) {
         const fullHash = match.ipfs_pin_hash as string;
@@ -2024,69 +2010,27 @@ export function MessageCard({
       };
 
       const resolveMetadataHashFromNetwork = async (hashFragment: string): Promise<string | null> => {
-        const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-        const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-
-        if (!pinataApiKey || !pinataSecretKey) {
-          console.warn('⚠️ Pinata credentials missing; cannot resolve metadata hash for:', hashFragment);
-          return null;
-        }
-
-        const headers: Record<string, string> = {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey,
-          Accept: 'application/json'
-        };
-
         try {
-          const params = new URLSearchParams({ status: 'pinned', pageLimit: '1' });
-          const keyvalues = {
-            shortHash: { value: hashFragment, op: 'eq' },
-            type: { value: 'message-metadata', op: 'eq' }
-          };
-          params.append('metadata[keyvalues]', JSON.stringify(keyvalues));
-
-          const primaryResponse = await fetch(`https://api.pinata.cloud/data/pinList?${params.toString()}`, {
-            headers
-          });
-
-          if (primaryResponse.ok) {
-            const json = await primaryResponse.json();
-            const rows: any[] = json?.rows ?? [];
-            const match = rows.find((row) => row?.metadata?.keyvalues?.shortHash === hashFragment);
-            if (match?.ipfs_pin_hash) {
-              return match.ipfs_pin_hash as string;
-            }
-          } else {
-            console.warn('⚠️ Pinata keyvalue lookup failed:', primaryResponse.status, primaryResponse.statusText);
+          const primaryRows = await searchPinnedFiles({ shortHash: hashFragment, type: 'message-metadata', pageLimit: 1 });
+          const match = primaryRows.find((row) => row?.metadata?.keyvalues?.shortHash === hashFragment);
+          if (match?.ipfs_pin_hash) {
+            return match.ipfs_pin_hash as string;
           }
         } catch (err) {
           console.error('❌ Pinata keyvalue lookup error:', err);
         }
 
         try {
-          const fallbackParams = new URLSearchParams({ status: 'pinned', pageLimit: '5' });
-          fallbackParams.append('hashContains', hashFragment);
-
-          const fallbackResponse = await fetch(`https://api.pinata.cloud/data/pinList?${fallbackParams.toString()}`, {
-            headers
+          const fallbackRows = await searchPinnedFiles({ hashContains: hashFragment, pageLimit: 5 });
+          const match = fallbackRows.find((row) => {
+            if (!row?.ipfs_pin_hash) return false;
+            if (row?.metadata?.keyvalues?.type === 'message-metadata') return true;
+            const name = row?.metadata?.name as string | undefined;
+            return typeof name === 'string' && name.toLowerCase().includes('metadata');
           });
 
-          if (fallbackResponse.ok) {
-            const json = await fallbackResponse.json();
-            const rows: any[] = json?.rows ?? [];
-            const match = rows.find((row) => {
-              if (!row?.ipfs_pin_hash) return false;
-              if (row?.metadata?.keyvalues?.type === 'message-metadata') return true;
-              const name = row?.metadata?.name as string | undefined;
-              return typeof name === 'string' && name.toLowerCase().includes('metadata');
-            });
-
-            if (match?.ipfs_pin_hash) {
-              return match.ipfs_pin_hash as string;
-            }
-          } else {
-            console.warn('⚠️ Pinata fallback lookup failed:', fallbackResponse.status, fallbackResponse.statusText);
+          if (match?.ipfs_pin_hash) {
+            return match.ipfs_pin_hash as string;
           }
         } catch (err) {
           console.error('❌ Pinata fallback lookup error:', err);

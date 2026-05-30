@@ -3,7 +3,6 @@ import type { ReactNode } from "react";
 import { Metadata } from "next";
 import { Providers } from "../components/Providers";
 import { FarcasterProvider } from "../components/FarcasterProvider";
-import { EncryptionKeyManager } from "../components/EncryptionKeyManager";
 
 const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "https://sealedmessage.app";
 
@@ -90,7 +89,6 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
       <body className="min-h-screen bg-midnight text-slate-100" suppressHydrationWarning>
         <FarcasterProvider>
           <Providers>
-            <EncryptionKeyManager />
             <div className="mx-auto flex min-h-screen max-w-6xl flex-col px-6 py-8 overflow-visible">
               {children}
             </div>

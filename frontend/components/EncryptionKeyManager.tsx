@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useAccount, usePublicClient } from "wagmi";
 import { useContractAddress } from "../lib/useContractAddress";
+import { useContractVersion } from "../lib/useContractAddress";
 import { sealedMessageAbi } from "../lib/sealedMessageAbi";
 import { getOrCreateEncryptionKey } from "../lib/keyAgreement";
 import { ethers } from "ethers";
@@ -13,11 +14,17 @@ import { ethers } from "ethers";
 export function EncryptionKeyManager() {
   const { address, isConnected } = useAccount();
   const contractAddress = useContractAddress();
+  const contractVersion = useContractVersion();
   const publicClient = usePublicClient();
   const [isRegistering, setIsRegistering] = useState(false);
   const [hasChecked, setHasChecked] = useState(false);
 
   useEffect(() => {
+    if (contractVersion === "v5-fhe") {
+      setHasChecked(true);
+      return;
+    }
+
     if (!isConnected || !address || !contractAddress || !publicClient || hasChecked) {
       return;
     }
@@ -68,7 +75,7 @@ export function EncryptionKeyManager() {
     };
 
     checkAndRegister();
-  }, [isConnected, address, contractAddress, publicClient, hasChecked]);
+  }, [isConnected, address, contractAddress, publicClient, hasChecked, contractVersion]);
 
   return null;
 }

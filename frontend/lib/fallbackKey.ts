@@ -9,14 +9,14 @@ const CURVE_ORDER = BigInt("0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBF
  * Generate fallback encryption keypair for receivers who haven't registered yet.
  * Uses: keccak256(receiverAddress + "SealedMessage" + FALLBACK_SEED)
  * 
- * SECURITY: The FALLBACK_SEED from .env adds extra entropy.
- * Do NOT share your FALLBACK_SEED publicly.
+ * SECURITY: This fallback is deterministic and is not treated as a secret.
+ * It exists only for legacy compatibility.
  */
 export function generateFallbackKeyPair(receiverAddress: string): {
   privateKey: Uint8Array;
   publicKey: Uint8Array;
 } {
-  const fallbackSeed = process.env.NEXT_PUBLIC_FALLBACK_SEED || "DefaultSeed";
+  const fallbackSeed = "sealed-message-legacy-fallback-domain";
   
   // Combine receiver address + static string + secret seed
   const seedString = 

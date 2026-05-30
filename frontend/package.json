@@ -9,16 +9,16 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "0xsequence": "^2.3.33",
     "@0xsequence/rainbowkit-plugin": "^3.0.0",
     "@0xsequence/wagmi-connector": "^4.0.1",
-    "@zama-fhe/relayer-sdk": "^0.4.3",
     "@farcaster/frame-sdk": "^0.0.64",
     "@helia/unixfs": "^6.0.1",
     "@noble/hashes": "^2.0.1",
     "@noble/secp256k1": "^3.0.0",
     "@rainbow-me/rainbowkit": "^2.2.9",
     "@tanstack/react-query": "^5.59.16",
+    "@zama-fhe/relayer-sdk": "0.4.3",
+    "0xsequence": "^2.3.33",
     "buffer": "^6.0.3",
     "clsx": "^2.1.0",
     "dayjs": "^1.11.11",

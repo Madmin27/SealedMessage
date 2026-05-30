@@ -12,6 +12,7 @@ import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
 import relativeTime from "dayjs/plugin/relativeTime";
+import { pinFileToIpfs } from "../lib/ipfsClient";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -29,6 +30,8 @@ export function FHEMessageForm({ onSubmitted }: Props) {
   const contractAddress = useContractAddress();
   const { data: balance } = useBalance({ address: userAddress });
   const chainId = chain?.id;
+  const nativeSymbol = chain?.nativeCurrency?.symbol ?? "ETH";
+  const nativeDecimals = chain?.nativeCurrency?.decimals ?? 18;
 
   // Form state
   const [receiver, setReceiver] = useState<string>("");
@@ -48,7 +51,8 @@ export function FHEMessageForm({ onSubmitted }: Props) {
   // Conditions
   const [timeConditionEnabled, setTimeConditionEnabled] = useState(true);
   const [paymentEnabled, setPaymentEnabled] = useState(false);
-  const [paymentAmount, setPaymentAmount] = useState<string>("0");
+  const [paymentAmount, setPaymentAmount] = useState<string>("0"); // Internal base units
+  const [paymentInputValue, setPaymentInputValue] = useState<string>("");
   const [unlockMode, setUnlockMode] = useState<"preset" | "custom">("preset");
   const [presetDuration, setPresetDuration] = useState(300);
   const [unlock, setUnlock] = useState("");
@@ -93,15 +97,27 @@ export function FHEMessageForm({ onSubmitted }: Props) {
     return now;
   }, [timeConditionEnabled, unlockMode, presetDuration, unlock, selectedTimezone]);
 
+  const parsedPaymentAmount = useMemo(() => {
+    if (!paymentAmount) return 0n;
+    try {
+      return BigInt(paymentAmount);
+    } catch (err) {
+      console.warn("⚠️ Invalid FHE payment amount state", paymentAmount, err);
+      return 0n;
+    }
+  }, [paymentAmount]);
+
+  const hasValidPaymentAmount = parsedPaymentAmount > 0n;
+
   // Recompute mask
   useEffect(() => {
     let mask = 0;
     const now = Math.floor(Date.now() / 1000);
     if (timeConditionEnabled && computedUnlockTime > now + 60) mask |= 0x01;
-    if (paymentEnabled && paymentAmount && BigInt(paymentAmount) > 0n) mask |= 0x02;
+    if (paymentEnabled && hasValidPaymentAmount) mask |= 0x02;
     if (mask === 0) mask = 0x01;
     setConditionMask(mask);
-  }, [timeConditionEnabled, paymentEnabled, paymentAmount, computedUnlockTime]);
+  }, [timeConditionEnabled, paymentEnabled, hasValidPaymentAmount, computedUnlockTime]);
 
   // Validate form
   const isFormValid = useMemo(() => {
@@ -109,29 +125,18 @@ export function FHEMessageForm({ onSubmitted }: Props) {
     if (receiver.toLowerCase() === userAddress.toLowerCase()) return false;
     if (content.trim().length === 0 && !attachedFile) return false;
     if (!timeConditionEnabled && !paymentEnabled) return false;
+    if (paymentEnabled && !hasValidPaymentAmount) return false;
     return true;
-  }, [isConnected, userAddress, contractAddress, receiver, content, attachedFile, timeConditionEnabled, paymentEnabled]);
+  }, [isConnected, userAddress, contractAddress, receiver, content, attachedFile, timeConditionEnabled, paymentEnabled, hasValidPaymentAmount]);
 
   // Upload to IPFS
   const uploadToIPFS = useCallback(async (fileOrJson: File | Blob, fileName: string): Promise<string> => {
-    const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-    const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-    if (!pinataApiKey || !pinataSecretKey) throw new Error("IPFS credentials not configured");
-
-    const formData = new FormData();
     const file = fileOrJson instanceof File ? fileOrJson : new File([fileOrJson], fileName, { type: "application/json" });
-    formData.append("file", file);
-    formData.append("pinataMetadata", JSON.stringify({ name: fileName, keyvalues: { type: "fhe-message" } }));
-
-    const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-      method: "POST",
-      headers: { pinata_api_key: pinataApiKey, pinata_secret_api_key: pinataSecretKey },
-      body: formData,
+    const data = await pinFileToIpfs({
+      file,
+      metadata: { name: fileName, keyvalues: { type: "fhe-message" } },
     });
-
-    if (!response.ok) throw new Error(`IPFS upload failed: ${response.statusText}`);
-    const data = await response.json();
-    return data.IpfsHash as string;
+    return data.IpfsHash;
   }, []);
 
   // File handling
@@ -252,7 +257,7 @@ export function FHEMessageForm({ onSubmitted }: Props) {
 
       // 3. Prepare contract args — plaintext CIDs + encrypted unlock time
       //    FHEVM v0.11: sendMessage takes separate handle + proof params
-      const requiredPayment = paymentEnabled && paymentAmount ? BigInt(paymentAmount) : 0n;
+      const requiredPayment = paymentEnabled ? parsedPaymentAmount : 0n;
       const args: readonly [
         `0x${string}`,        // receiver
         `0x${string}`,        // encryptedUnlockTimeHandle (bytes32)
@@ -292,6 +297,7 @@ export function FHEMessageForm({ onSubmitted }: Props) {
       setPreviewIpfsHash("");
       setAttachmentPreview(null);
       setPaymentAmount("0");
+      setPaymentInputValue("");
       setPaymentEnabled(false);
       setTimeConditionEnabled(true);
       setUnlockMode("preset");
@@ -308,7 +314,7 @@ export function FHEMessageForm({ onSubmitted }: Props) {
     isSubmitting, isFormValid, contractAddress, userAddress, receiver, content,
     attachedFile, ipfsHash, attachmentMetadata, previewIpfsHash,
     computedUnlockTime, timeConditionEnabled, paymentEnabled,
-    paymentAmount, conditionMask, uploadToIPFS, onSubmitted,
+    parsedPaymentAmount, conditionMask, uploadToIPFS, onSubmitted,
   ]);
 
   // ==========================================
@@ -443,14 +449,34 @@ export function FHEMessageForm({ onSubmitted }: Props) {
             {paymentEnabled && (
               <div className="ml-6">
                 <input
-                  type="number"
+                  type="text"
                   step="0.001"
-                  min="0"
-                  value={paymentAmount}
-                  onChange={(e) => setPaymentAmount(e.target.value)}
-                  placeholder="Amount in ZAMA"
+                  inputMode="decimal"
+                  value={paymentInputValue}
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    if (value === "" || /^\d*\.?\d*$/.test(value)) {
+                      setPaymentInputValue(value);
+
+                      if (value && value !== ".") {
+                        try {
+                          const nextAmount = ethers.parseUnits(value, nativeDecimals).toString();
+                          setPaymentAmount(nextAmount);
+                        } catch (err) {
+                          console.warn("⚠️ Failed to parse FHE payment input", err);
+                          setPaymentAmount("0");
+                        }
+                      } else {
+                        setPaymentAmount("0");
+                      }
+                    }
+                  }}
+                  placeholder={`Amount in ${nativeSymbol}`}
                   className="w-full rounded-lg border border-gray-600 bg-gray-800 px-3 py-1.5 text-sm text-white placeholder-gray-500 focus:border-blue-500 focus:outline-none"
                 />
+                <p className="mt-2 text-xs text-gray-500">
+                  Example: 0.001 {nativeSymbol}
+                </p>
               </div>
             )}
           </div>

@@ -1,6 +1,9 @@
+"use client";
+
 import { useNetwork } from "./wagmiCompat";
 import { getContractAddress, getFHEContractAddress } from "./chains";
 import { useVersioning } from "../components/VersionProvider";
+import { getDeployment } from "./deployments";
 
 /**
  * Hook to get the active SealedMessage contract address for the current network.
@@ -15,7 +18,13 @@ export function useContractAddress(): `0x${string}` | undefined {
   }
 
   const version = getSelectedVersion(chain.id);
-  const isFHE = version === "v4-fhe";
+  const deployment = getDeployment(chain.id, version);
+
+  if (deployment?.address) {
+    return deployment.address;
+  }
+
+  const isFHE = version === "v4-fhe-legacy";
 
   if (isFHE) {
     return getFHEContractAddress(chain.id);
@@ -35,15 +44,13 @@ export function useHasContract(): boolean {
 /**
  * Returns the ABI name based on the selected contract version.
  */
-export function useContractVersion(): "v3" | "v4-fhe" | undefined {
+export function useContractVersion(): string | undefined {
   const { chain } = useNetwork();
   const { getSelectedVersion } = useVersioning();
 
   if (!chain) return undefined;
 
-  const version = getSelectedVersion(chain.id);
-  if (version === "v4-fhe") return "v4-fhe";
-  return "v3";
+  return getSelectedVersion(chain.id);
 }
 
 /**
@@ -51,5 +58,5 @@ export function useContractVersion(): "v3" | "v4-fhe" | undefined {
  */
 export function useIsFHE(): boolean {
   const version = useContractVersion();
-  return version === "v4-fhe";
+  return version === "v4-fhe-legacy" || version === "v5-fhe";
 }

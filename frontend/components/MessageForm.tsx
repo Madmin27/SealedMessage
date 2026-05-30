@@ -18,6 +18,7 @@ import { aesGcmEncryptMessage, aesGcmEncryptBytes, bytesToHex, hexToBytes } from
 import { generateFallbackKeyPair } from "../lib/fallbackKey";
 import { getOrCreateEncryptionKey } from "../lib/keyAgreement";
 import { getChainById } from "../lib/chains";
+import { pinFileToIpfs } from "../lib/ipfsClient";
 
 dayjs.extend(utc);
 dayjs.extend(timezone);
@@ -157,9 +158,24 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       return parseUnits("0.001", nativeDecimals).toString();
     } catch (err) {
       console.warn("⚠️ Failed to compute wei placeholder", err);
-  return "1000000000000000"; // Fallback ~0.001 in 18-decimal base units
+      return "1000000000000000"; // Fallback ~0.001 in 18-decimal base units
     }
   }, [nativeDecimals]);
+
+  const parsedPaymentAmount = useMemo(() => {
+    if (!paymentAmount) {
+      return 0n;
+    }
+
+    try {
+      return BigInt(paymentAmount);
+    } catch (err) {
+      console.warn("⚠️ Invalid payment amount state", paymentAmount, err);
+      return 0n;
+    }
+  }, [paymentAmount]);
+
+  const hasValidPaymentAmount = parsedPaymentAmount > 0n;
   
   // AES-256-GCM only - No version switching needed
   const isSealedContract = true; // Always use Sealed
@@ -414,41 +430,17 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const metadataBlob = new Blob([metadataJson], { type: "application/json" });
       const metadataFile = new File([metadataBlob], `${label}.json`, { type: "application/json" });
 
-      const formData = new FormData();
-      formData.append("file", metadataFile);
-      formData.append(
-        "pinataMetadata",
-        JSON.stringify({
+      const data = await pinFileToIpfs({
+        file: metadataFile,
+        metadata: {
           name: `${label}-${shortHash}`,
           keyvalues: {
             shortHash,
             type: "message-metadata",
             category: payloadType
           }
-        })
-      );
-
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-
-      if (!pinataApiKey || !pinataSecretKey) {
-        throw new Error("IPFS credentials not configured");
-      }
-
-      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-        method: "POST",
-        headers: {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey
-        },
-        body: formData
+        }
       });
-
-      if (!response.ok) {
-        throw new Error("Metadata upload failed");
-      }
-
-      const data = await response.json();
       const metadataHashValue = data.IpfsHash as string;
 
       const mappingKey = `file-metadata-${shortHash}`;
@@ -503,40 +495,16 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const metadataBlob = new Blob([metadataJson], { type: "application/json" });
       const metadataFile = new File([metadataBlob], `${label}-${shortHash}.json`, { type: "application/json" });
 
-      const formData = new FormData();
-      formData.append("file", metadataFile);
-      formData.append(
-        "pinataMetadata",
-        JSON.stringify({
+      const data = await pinFileToIpfs({
+        file: metadataFile,
+        metadata: {
           name: `${label}-${shortHash}`,
           keyvalues: {
             shortHash,
             type: "message-public"
           }
-        })
-      );
-
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-
-      if (!pinataApiKey || !pinataSecretKey) {
-        throw new Error("IPFS credentials not configured");
-      }
-
-      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-        method: "POST",
-        headers: {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey
-        },
-        body: formData
+        }
       });
-
-      if (!response.ok) {
-        throw new Error("Public metadata upload failed");
-      }
-
-      const data = await response.json();
       const metadataHashValue = data.IpfsHash as string;
 
       try {
@@ -552,46 +520,21 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       bytes: Uint8Array,
       shortHash: string | null
     ): Promise<{ cid: string; uri: string }> => {
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-
-      if (!pinataApiKey || !pinataSecretKey) {
-        throw new Error("IPFS credentials not configured");
-      }
-
     const fileName = shortHash ? `cipher-${shortHash}.bin` : `cipher-${Date.now()}.bin`;
     const arrayBuffer = new ArrayBuffer(bytes.byteLength);
     new Uint8Array(arrayBuffer).set(bytes);
     const blob = new Blob([arrayBuffer], { type: "application/octet-stream" });
       const file = new File([blob], fileName, { type: "application/octet-stream" });
-
-      const formData = new FormData();
-      formData.append("file", file);
-      formData.append(
-        "pinataMetadata",
-        JSON.stringify({
-          name: fileName,
-          keyvalues: {
-            shortHash: shortHash ?? undefined,
-            type: "sealed-ciphertext"
-          }
-        })
-      );
-
-      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-        method: "POST",
-        headers: {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey
-        },
-        body: formData
-      });
-
-      if (!response.ok) {
-        throw new Error("Ciphertext upload failed");
+    const data = await pinFileToIpfs({
+      file,
+      metadata: {
+        name: fileName,
+        keyvalues: {
+          shortHash: shortHash ?? undefined,
+          type: "sealed-ciphertext"
+        }
       }
-
-    const data = await response.json();
+    });
     const cid = data.IpfsHash as string;
 
       if (shortHash) {
@@ -1020,6 +963,8 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     // At least one condition must be enabled (time or payment)
     const hasCondition = timeConditionEnabled || paymentEnabled;
     
+    const paymentValid = !paymentEnabled || hasValidPaymentAmount;
+
     valid = isConnected &&
       !!receiver &&
       isAddress(receiver) &&
@@ -1027,6 +972,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       (content.trim().length > 0 || ipfsHash.length > 0) && // Message OR file must exist
       isReceiverKeyValid &&
       timeValid &&
+      paymentValid &&
       hasCondition; // At least one condition required
     
     setIsFormValid(valid);
@@ -1042,7 +988,8 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     unlock,
     selectedTimezone,
     timeConditionEnabled,
-    paymentEnabled
+    paymentEnabled,
+    hasValidPaymentAmount
   ]);
   
   const generateAttachmentPreview = useCallback((file: File): Promise<string | null> => {
@@ -1226,31 +1173,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       const fileName = `preview.${extension}`;
       const file = new File([blob], fileName, { type: inferredType });
       
-      const formData = new FormData();
-      formData.append("file", file);
-      
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-      
-      if (!pinataApiKey || !pinataSecretKey) {
-        console.warn("⚠️ IPFS credentials not configured, preview won't be uploaded");
-        return;
-      }
-      
-      const uploadResponse = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-        method: "POST",
-        headers: {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey,
-        },
-        body: formData,
-      });
-      
-      if (!uploadResponse.ok) {
-        throw new Error(`Preview upload failed: ${uploadResponse.statusText}`);
-      }
-
-      const data = await uploadResponse.json();
+      const data = await pinFileToIpfs({ file });
       const hash = data.IpfsHash;
 
       setPreviewIpfsHash(hash);
@@ -1266,37 +1189,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     setError(null);
     
     try {
-      // Pinata free IPFS service
-      const formData = new FormData();
-      formData.append("file", file);
-      
-      // Use public Pinata gateway for demo (add your own API key in production)
-      // NOTE: This is for demo purposes, add to .env.local for production:
-      // NEXT_PUBLIC_PINATA_API_KEY=your_key
-      // NEXT_PUBLIC_PINATA_SECRET_KEY=your_secret
-      
-      const pinataApiKey = process.env.NEXT_PUBLIC_PINATA_API_KEY;
-      const pinataSecretKey = process.env.NEXT_PUBLIC_PINATA_SECRET_KEY;
-      
-      if (!pinataApiKey || !pinataSecretKey) {
-        throw new Error("⚠️ IPFS credentials not configured. Please add NEXT_PUBLIC_PINATA_API_KEY and NEXT_PUBLIC_PINATA_SECRET_KEY to .env.local");
-      }
-      
-      const response = await fetch("https://api.pinata.cloud/pinning/pinFileToIPFS", {
-        method: "POST",
-        headers: {
-          pinata_api_key: pinataApiKey,
-          pinata_secret_api_key: pinataSecretKey,
-        },
-        body: formData,
-      });
-      
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(`Upload failed: ${errorData.error || response.statusText}`);
-      }
-
-      const data = await response.json();
+      const data = await pinFileToIpfs({ file });
       const hash = data.IpfsHash;
 
       setIpfsHash(hash);
@@ -1386,7 +1279,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     }
     
     // Payment condition: Checkbox enabled and amount > 0
-    if (paymentEnabled && paymentAmount && BigInt(paymentAmount) > 0n) {
+    if (paymentEnabled && hasValidPaymentAmount) {
       mask |= 0x02; // Payment condition active
     }
     
@@ -1398,7 +1291,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     }
     
     return mask;
-  }, [timeConditionEnabled, preparedUnlockTime, paymentEnabled, paymentAmount]);
+  }, [timeConditionEnabled, preparedUnlockTime, paymentEnabled, hasValidPaymentAmount]);
   
   // Sealed Contract Write - AES-256-GCM encrypted with payment support
   const { config: configSealed, error: prepareError } = usePrepareContractWrite({
@@ -1420,7 +1313,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           encryptedData.receiverEnvelopeHash,                                  // receiver envelope hash (ECDH)
           encryptedData.escrowKeyVersion,                                      // escrow key version
           BigInt(preparedUnlockTime),                                          // unlockTime
-          BigInt(paymentAmount || '0'),                                        // requiredPayment
+          parsedPaymentAmount,                                                  // requiredPayment
           conditionMask                                                         // conditionMask
         ]
       : undefined,
@@ -1777,7 +1670,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
           encrypted.receiverEnvelopeHash,
           encrypted.escrowKeyVersion,
           BigInt(safeUnlockForTx),
-          BigInt(paymentAmount || '0'),
+          parsedPaymentAmount,
           conditionMask
         );
         setError(`⏳ Transaction sent: ${tx.hash.slice(0, 10)}...`);
@@ -2259,7 +2152,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                       // Convert current Wei/base units to native units
                       if (paymentAmount && paymentAmount !== "0") {
                         try {
-                          const nativeValue = formatUnits(BigInt(paymentAmount), nativeDecimals);
+                          const nativeValue = formatUnits(parsedPaymentAmount, nativeDecimals);
                           setPaymentInputValue(nativeValue);
                           return;
                         } catch (convertErr) {
@@ -2340,18 +2233,18 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
               </p>
               
               {/* Preview Box */}
-              {paymentAmount && paymentAmount !== '0' && (
+              {hasValidPaymentAmount && (
                 <div className="rounded-lg bg-purple-500/10 border border-purple-500/30 p-3 space-y-1">
                   <div className="flex justify-between text-xs">
                     <span className="text-purple-300/80">{nativeSymbol}:</span>
                     <span className="font-mono text-purple-200">
-                      {formatUnits(BigInt(paymentAmount), nativeDecimals)} {nativeSymbol}
+                      {formatUnits(parsedPaymentAmount, nativeDecimals)} {nativeSymbol}
                     </span>
                   </div>
                   <div className="flex justify-between text-xs">
                     <span className="text-purple-300/80">Wei:</span>
                     <span className="font-mono text-purple-200 text-[10px]">
-                      {paymentAmount}
+                      {parsedPaymentAmount.toString()}
                     </span>
                   </div>
                 </div>

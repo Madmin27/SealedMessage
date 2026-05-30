@@ -6,11 +6,11 @@ import path from "path";
  * SealedMessageFHE Deployment Script
  * 
  * Usage:
- *   ENABLE_FHEVM=true npx hardhat run scripts/deploy-fhe.ts --network fhevm
+ *   ENABLE_FHEVM=true npx hardhat run scripts/deploy-fhe.ts --network sepolia
  * 
  * Ön koşullar:
- *   - .env dosyasında ZAMA_RPC_URL, ZAMA_CHAIN_ID, PRIVATE_KEY tanımlı olmalı
- *   - Deployer adreste yeterli ZAMA token bulunmalı (faucet: https://faucet.zama.ai)
+ *   - .env dosyasında SEPOLIA_RPC_URL, PRIVATE_KEY tanımlı olmalı
+ *   - Deployer adreste yeterli Sepolia ETH bulunmalı
  */
 
 async function main() {
@@ -20,11 +20,10 @@ async function main() {
   console.log("\n=== SealedMessageFHE Deployment ===");
   console.log(`Network: ${hre.network.name} (chain ID: ${hre.network.config.chainId})`);
   console.log(`Deployer: ${deployer.address}`);
-  console.log(`Balance: ${hre.ethers.formatEther(balance)} ZAMA\n`);
+  console.log(`Balance: ${hre.ethers.formatEther(balance)} ETH\n`);
 
   if (balance === 0n) {
-    console.warn("⚠️  Deployer balance is 0. Make sure you have ZAMA tokens from faucet.");
-    console.warn("   Faucet: https://faucet.zama.ai\n");
+    console.warn("⚠️  Deployer balance is 0. Make sure you have Sepolia ETH.\n");
   }
 
   console.log("Deploying SealedMessageFHE contract...");
@@ -59,7 +58,7 @@ async function main() {
   await fs.mkdir(deploymentsDir, { recursive: true });
 
   const metadata = {
-    version: "v4-fhe",
+    version: "v5-fhe",
     contract: "SealedMessageFHE",
     address,
     network: hre.network.name,
@@ -106,9 +105,9 @@ async function main() {
   // Sonraki adımlar
   console.log("\n=== Next Steps ===");
   console.log(`1. Add this address to your frontend .env.local:`);
-  console.log(`   NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_ZAMA=${address}`);
-  console.log(`2. Update frontend/lib/chains.public.json with Zama config if not present`);
-  console.log(`3. Restart the frontend dev server`);
+  console.log(`   NEXT_PUBLIC_FHE_SECURE_CONTRACT_ADDRESS_SEPOLIA=${address}`);
+  console.log(`2. Restart the frontend dev server`);
+  console.log(`3. Test the V5 secure flow on Sepolia`);
   console.log("\n=== Deployment Complete ===\n");
 }
 

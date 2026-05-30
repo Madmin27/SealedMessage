@@ -1,6 +1,7 @@
 "use client";
 
 import { createContext, useContext, useCallback, useState, useEffect, type PropsWithChildren } from "react";
+import { getDefaultDeploymentVersion, getDeploymentsForChain } from "../lib/deployments";
 
 // ========================================
 // Types
@@ -28,24 +29,34 @@ export interface VersionContextValue {
 // Default versions per chain
 // ========================================
 
-const DEFAULT_VERSIONS: Record<number, string> = {
-  11155111: "v4-fhe", // Sepolia-backed Zama FHEVM defaults to FHE
-};
+function getDefaultVersions(): Record<number, string> {
+  return {
+    11155111: getDefaultDeploymentVersion(11155111) ?? "v3",
+  };
+}
 
 // ========================================
 // Available versions
 // ========================================
 
-const ALL_VERSIONS: VersionOption[] = [
-  { key: "v3", label: "V3 — SealedMessage", description: "Original (ECDH+AES-256-GCM)", isFHE: false },
-  { key: "v4-fhe", label: "V4-FHE — SealedMessageFHE", description: "FHE-encrypted (Zama FHEVM on Sepolia)", isFHE: true },
-];
+function getVersionOptions(chainId?: number): VersionOption[] {
+  return getDeploymentsForChain(chainId)
+    .filter((deployment) => Boolean(deployment.address))
+    .map((deployment) => ({
+      key: deployment.key,
+      label: deployment.label,
+      description: deployment.description,
+      isFHE: deployment.isFHE,
+    }));
+}
 
 // ========================================
-// FHE-only chains (only FHE version supported)
+// Available versions per chain
 // ========================================
 
-const FHE_ONLY_CHAINS: number[] = [11155111];
+function getChainVersionKeys(chainId?: number): string[] {
+  return getVersionOptions(chainId).map((deployment) => deployment.key);
+}
 
 // ========================================
 // LocalStorage helpers
@@ -74,7 +85,8 @@ function setStoredVersion(chainId: number, version: string): void {
 // ========================================
 
 export function isFHEChain(chainId: number): boolean {
-  return FHE_ONLY_CHAINS.includes(chainId);
+  const versions = getVersionOptions(chainId);
+  return versions.length > 0 && versions.every((version) => version.isFHE);
 }
 
 // ========================================
@@ -84,7 +96,7 @@ export function isFHEChain(chainId: number): boolean {
 const VersionContext = createContext<VersionContextValue>({
   getSelectedVersion: () => "v3",
   selectVersion: () => {},
-  getAvailableVersions: () => ALL_VERSIONS,
+  getAvailableVersions: () => getVersionOptions(11155111),
   getSelectedVersionLabel: () => "V3 — SealedMessage",
 });
 
@@ -93,18 +105,23 @@ export function VersionProvider({ children }: PropsWithChildren) {
 
   // Client-side mount — load from localStorage
   useEffect(() => {
+    const defaultVersions = getDefaultVersions();
     const loaded: Record<number, string> = {};
     // Load defaults for all chains
-    for (const chainId of Object.keys(DEFAULT_VERSIONS).map(Number)) {
+    for (const chainId of Object.keys(defaultVersions).map(Number)) {
       const stored = getStoredVersion(chainId);
-      loaded[chainId] = stored ?? DEFAULT_VERSIONS[chainId] ?? "v3";
+      const availableKeys = getChainVersionKeys(chainId);
+      const fallbackVersion = defaultVersions[chainId] ?? "v3";
+      loaded[chainId] = stored && availableKeys.includes(stored) ? stored : fallbackVersion;
     }
     // Also check non-default chains
     for (const key of Object.keys(localStorage)) {
       if (key.startsWith(STORAGE_KEY_PREFIX)) {
         const chainId = parseInt(key.replace(STORAGE_KEY_PREFIX, ""), 10);
         if (!isNaN(chainId) && !loaded[chainId]) {
-          loaded[chainId] = localStorage.getItem(key) ?? "v3";
+          const stored = localStorage.getItem(key);
+          const fallbackVersion = getDefaultDeploymentVersion(chainId) ?? "v3";
+          loaded[chainId] = stored && getChainVersionKeys(chainId).includes(stored) ? stored : fallbackVersion;
         }
       }
     }
@@ -114,11 +131,12 @@ export function VersionProvider({ children }: PropsWithChildren) {
   const getSelectedVersion = useCallback(
     (chainId?: number): string | undefined => {
       if (!chainId) return undefined;
+      const availableKeys = getChainVersionKeys(chainId);
       // First try from map
       const mapped = versionMap[chainId];
-      if (mapped) return mapped;
+      if (mapped && availableKeys.includes(mapped)) return mapped;
       // Otherwise try default
-      return DEFAULT_VERSIONS[chainId] ?? "v3";
+      return getDefaultDeploymentVersion(chainId) ?? "v3";
     },
     [versionMap]
   );
@@ -130,11 +148,10 @@ export function VersionProvider({ children }: PropsWithChildren) {
 
   const getAvailableVersions = useCallback(
     (chainId?: number): VersionOption[] => {
-      if (chainId && isFHEChain(chainId)) {
-        // FHE-only chain — sadece FHE versiyonu
-        return ALL_VERSIONS.filter((v) => v.isFHE);
+      if (chainId) {
+        return getVersionOptions(chainId);
       }
-      return ALL_VERSIONS;
+      return getVersionOptions(11155111);
     },
     []
   );
@@ -143,10 +160,10 @@ export function VersionProvider({ children }: PropsWithChildren) {
     (chainId?: number): string => {
       const key = chainId ? getSelectedVersion(chainId) : undefined;
       if (!key) return "Unknown";
-      const option = ALL_VERSIONS.find((v) => v.key === key);
+      const option = getAvailableVersions(chainId).find((version) => version.key === key);
       return option?.label ?? key;
     },
-    [getSelectedVersion]
+    [getAvailableVersions, getSelectedVersion]
   );
 
   const value: VersionContextValue = {
