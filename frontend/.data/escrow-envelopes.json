@@ -2428,5 +2428,140 @@
     },
     "createdAt": "2025-10-31T16:57:32.017Z",
     "updatedAt": "2025-10-31T16:57:32.017Z"
+  },
+  "0x69e57afec3eaf34343b585673417c4939ce4ee75da1b8f4159d7ce29af14e22a": {
+    "commitment": "0x69e57afec3eaf34343b585673417c4939ce4ee75da1b8f4159d7ce29af14e22a",
+    "receiverEnvelopeHash": "0xde99e0f202055057cc979e132895d1b7584ab621999971e513e1b18423e20c18",
+    "ciphertextHash": "0xe8e99c6cb178babfbcdf4e8d6e74900ce87975e69816ca39b7d83b0da51c69c9",
+    "metadataShortHash": "746vYm",
+    "metadataKeccak": "0xe03b0c5cd8b7dc5d6ffe0c72975d31041ca0fceffba0ac8c1f449096d77f90ad",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0xe08a09a9f0124ec58372a21de055aedd102b773813463c0a5c4ee379c0afbe0e",
+      "iv": "0x36f9820a9d43e59c250d6750",
+      "authTag": "0xbea74687e77277d1cc0b55bff3d2d23f"
+    },
+    "createdAt": "2025-11-01T10:12:16.866Z",
+    "updatedAt": "2025-11-01T10:12:16.866Z"
+  },
+  "0xf645405977b3e11d75e4712a36be5f7a2fa6b847e29e6ede7efe927489b24dee": {
+    "commitment": "0xf645405977b3e11d75e4712a36be5f7a2fa6b847e29e6ede7efe927489b24dee",
+    "receiverEnvelopeHash": "0x8974b448ef7d8bad109549477331a3142c0a088f652a22423c280cbef9f4d64f",
+    "ciphertextHash": "0xe46b08fa6b51788d4b84d3009149dad8f7b06c53e499262e21ee3f9756c68587",
+    "metadataShortHash": "b8Jahs",
+    "metadataKeccak": "0x9aec508a08f36c293fbb648e09b4dd0589a58af10c0b6946f3546eb993da8f6d",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0x6ca0e3e2bc78decb5d96d7392af47c91a5f9115b4d95d3d1a643a902fe8e43d7",
+      "iv": "0xcf8b083067cc6144380e2225",
+      "authTag": "0xb04264825201a4e4593a6e686eacc94e"
+    },
+    "createdAt": "2025-11-01T10:12:50.433Z",
+    "updatedAt": "2025-11-01T10:12:50.433Z"
+  },
+  "0xe55d50907c209ee854b18cadffe6bce8ba04aef41660a607feb9a95c4453bd64": {
+    "commitment": "0xe55d50907c209ee854b18cadffe6bce8ba04aef41660a607feb9a95c4453bd64",
+    "receiverEnvelopeHash": "0x317bbbb1485e3d40d2b5a4aac01bb9a052f329cf90c916ffc6c084df10323764",
+    "ciphertextHash": "0x9506e0f60d2b1a91743b14ebe3122c8d8878e653e1e44b10c0c391d5267b85e5",
+    "metadataShortHash": "FmT1Z1",
+    "metadataKeccak": "0x09c956036cfeb46214e203f96cf7b94b0a927b140335b5b1adab93e7257ed580",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0x5b14c8d1d3769098e2f9f116980c36610f8faf15550e1311a28cb59fbb740f4d",
+      "iv": "0xb3d6a32c4de107a5b1b6c366",
+      "authTag": "0x3f267210be710891dbca8a88511386c7"
+    },
+    "createdAt": "2025-11-01T10:14:25.558Z",
+    "updatedAt": "2025-11-01T10:14:25.558Z"
+  },
+  "0xf8aa6c3c175acfee18b72670bc3b83ce0847ab2ce36f3f3bd0030e94ac025f3e": {
+    "commitment": "0xf8aa6c3c175acfee18b72670bc3b83ce0847ab2ce36f3f3bd0030e94ac025f3e",
+    "receiverEnvelopeHash": "0xbcacd1dc2cd96dde4e1004dc7b4200427bd4da793ee302cd712339e7cde4a5b8",
+    "ciphertextHash": "0x198e50313acf96bed36cf228dbd4b65c7484c098f32222d5498c743956cb5b2a",
+    "metadataShortHash": "jHD8Ch",
+    "metadataKeccak": "0x571abe90ff4a1a6f01e4b1de3caf295623f83f634b56f15477a0114404efc3d9",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0x37cabc3430218573c0fe73c756e13441b385ec441a505f293efcfde2787fa6ca",
+      "iv": "0x97c5fb3a5dc9e86000bd8206",
+      "authTag": "0x8a5896cb453ad241ff594fa52be90811"
+    },
+    "createdAt": "2025-11-01T10:19:44.335Z",
+    "updatedAt": "2025-11-01T10:19:44.335Z"
+  },
+  "0xc01ae60526ec742dd65011d26b15dbcf6f682a47d467078eaeaf2974397626e6": {
+    "commitment": "0xc01ae60526ec742dd65011d26b15dbcf6f682a47d467078eaeaf2974397626e6",
+    "receiverEnvelopeHash": "0x502b19a9e2873fd2b2a5613bcf12982ecc99490e792f391dd3684a67452f9fa4",
+    "ciphertextHash": "0x8324b7bbb49ed133646c4d5d14b6904c44986ddab9f2deb30b074ef924b0a75c",
+    "metadataShortHash": "F3HG7Y",
+    "metadataKeccak": "0x4c728c51ec605ffb97baa167dba4257b11aee3eeab19b25f288d36b741c01c26",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0x22653e915749d47e1114ea75733c46febafabf63d73b95f1d100fdfa6c335779",
+      "iv": "0xdd616aae39855cc2244aafcb",
+      "authTag": "0x715ffd4baebcb70320eb432e2be66ddf"
+    },
+    "createdAt": "2025-11-01T10:20:29.402Z",
+    "updatedAt": "2025-11-01T10:20:29.402Z"
+  },
+  "0xf35e1c278fd1523b1b8f22be5cc7c9437740668ad8737cedf444254b89241474": {
+    "commitment": "0xf35e1c278fd1523b1b8f22be5cc7c9437740668ad8737cedf444254b89241474",
+    "receiverEnvelopeHash": "0xd0db4c11bdff5b7002d1c99ec78545965315a11cd7c7d5cb840cee6a2d0f06b1",
+    "ciphertextHash": "0x5e9a150fca8a94d40b3bc2cc990bd36546aebaafd1a3a1642d7d462a4d619bbe",
+    "metadataShortHash": "jcSZmz",
+    "metadataKeccak": "0xe8c790371ff4a13ce3ad7983e0e225cbc0fb6da3d00957ce4aa63108e77d090d",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0x3741b203af2aab4876c3d3a097e91cf2d76830231eb0ad54a5cfd47137807aef",
+      "iv": "0x93ac2228fa4eb9c2c1198744",
+      "authTag": "0x2df2de5777533c91b165d4c6da4d79a2"
+    },
+    "createdAt": "2025-11-01T10:24:44.239Z",
+    "updatedAt": "2025-11-01T10:24:44.239Z"
+  },
+  "0x98bdb9874f4b07915400089ed18a02b8c0d8b3d574b1f62f4818297a30677316": {
+    "commitment": "0x98bdb9874f4b07915400089ed18a02b8c0d8b3d574b1f62f4818297a30677316",
+    "receiverEnvelopeHash": "0xfffff9598021ba33003b45a5ce2f444d468ac3fbc006c56180536028d7049c06",
+    "ciphertextHash": "0x7773f4d3ac47ccdcae6e8253c7eb67d64ca5794090a8664205ba898f2fa973ff",
+    "metadataShortHash": "mEsXE8",
+    "metadataKeccak": "0x17995d2cc7713be95128182aecc8f96bcd97e667d9ee46d5d26ff411b36ca294",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0xe853944b8f60d203a475d6b1d9d5dece1465bc1c59f9d9a5b994da57682b0981",
+      "iv": "0xbe1997b8366469e4e836b55b",
+      "authTag": "0xfff67838df6f055bda39bf38d12207ff"
+    },
+    "createdAt": "2025-11-01T10:46:52.877Z",
+    "updatedAt": "2025-11-01T10:46:52.877Z"
+  },
+  "0xf860eb318363306c4f5581041b9edd4c3cf96d5be0947b74beba5e9577699e4e": {
+    "commitment": "0xf860eb318363306c4f5581041b9edd4c3cf96d5be0947b74beba5e9577699e4e",
+    "receiverEnvelopeHash": "0x04512079d26ed0ea62491625a27f896d4d0221747820fc25e66af25a738357df",
+    "ciphertextHash": "0x75aa107e6bfe14233be007d2f16377cf206094efb7f1e90b8ad479998f3c5e1b",
+    "metadataShortHash": "frjmZR",
+    "metadataKeccak": "0xabd0388f1dbc34bc8efee6e16d6447fbfc0be10d0c4bf069358d2f3ec213de3f",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0x5a14f7f7980491d677aef585f53b394dac83d528ea353c7a80a198f1742d98e5",
+      "iv": "0x326a6245a25f51d55894f230",
+      "authTag": "0x897fd6574ce36fdac9f674216a402733"
+    },
+    "createdAt": "2025-11-01T12:39:37.006Z",
+    "updatedAt": "2025-11-01T12:39:37.006Z"
+  },
+  "0x00e12b65abf41d9e4e743008bd64a24efbea68e6df0ed83c82b4984c65f7b096": {
+    "commitment": "0x00e12b65abf41d9e4e743008bd64a24efbea68e6df0ed83c82b4984c65f7b096",
+    "receiverEnvelopeHash": "0x0d1d179d5811fc0d5966ef1410c286ffa16c43a01b638407ca846fda54b85c8e",
+    "ciphertextHash": "0xa3786356776f95ad3b6abbb9552e7f9c3292c759fbf6ee8538c8ec2ee3c64754",
+    "metadataShortHash": "R1KzzQ",
+    "metadataKeccak": "0x523ca6db0c55dae640571d95dca9e789ad2ac94ee7d12ce525c3ca8a74ab6d2a",
+    "senderPublicKey": "0x0325dd64da9dc7ecf4aa128ed6ee30999e266e627d35b77a0453879e1ecdad5c60",
+    "envelope": {
+      "ciphertext": "0xfe52c27957213aa340dd54a5a37e3171e01f02c776179aa49e68ec2154957d8e",
+      "iv": "0x73599f9773bbdbdcb0dd19c4",
+      "authTag": "0xdb75f3705852a8ad200c839fbbc9fd4c"
+    },
+    "createdAt": "2025-11-01T12:40:10.032Z",
+    "updatedAt": "2025-11-01T12:40:10.032Z"
   }
 }

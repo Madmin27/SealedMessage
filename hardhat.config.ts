@@ -138,13 +138,15 @@ if (process.env.POLYGON_RPC_URL && privateKey) {
   };
 }
 
-// Zama FHEVM (gelecek sprint)
-const rpcUrl = process.env.RPC_URL;
-if (rpcUrl && privateKey) {
+// Zama FHEVM — FHE kontratı (SealedMessageFHE.sol) için
+// Önce ZAMA_RPC_URL/ZAMA_CHAIN_ID, yoksa eski generic RPC_URL/CHAIN_ID kullan
+const zamaRpc = process.env.ZAMA_RPC_URL ?? process.env.RPC_URL;
+const zamaChainId = process.env.ZAMA_CHAIN_ID ?? process.env.CHAIN_ID;
+if (zamaRpc && privateKey) {
   networks.fhevm = {
-    url: rpcUrl,
+    url: zamaRpc,
     accounts: [privateKey],
-    chainId: process.env.CHAIN_ID ? Number(process.env.CHAIN_ID) : undefined
+    chainId: zamaChainId ? Number(zamaChainId) : undefined
   };
 }
 

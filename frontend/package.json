@@ -12,6 +12,7 @@
     "0xsequence": "^2.3.33",
     "@0xsequence/rainbowkit-plugin": "^3.0.0",
     "@0xsequence/wagmi-connector": "^4.0.1",
+    "@zama-fhe/relayer-sdk": "^0.4.3",
     "@farcaster/frame-sdk": "^0.0.64",
     "@helia/unixfs": "^6.0.1",
     "@noble/hashes": "^2.0.1",

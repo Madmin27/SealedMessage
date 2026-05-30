@@ -31,7 +31,18 @@ const CONTRACT_ADDRESSES: Record<string, string | undefined> = {
   baseSepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_BASE_SEPOLIA,
   scrollSepolia: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_SCROLL_SEPOLIA,
   incentiv: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_INCENTIV,
-  arcTestnet: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_ARC_TESTNET
+  arcTestnet: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_ARC_TESTNET,
+  zama: process.env.NEXT_PUBLIC_CONTRACT_ADDRESS_ZAMA
+};
+
+// FHE contract addresses (SealedMessageFHE.sol) — her zincir için ayrı
+const FHE_CONTRACT_ADDRESSES: Record<string, string | undefined> = {
+  sepolia: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_SEPOLIA,
+  baseSepolia: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_BASE_SEPOLIA,
+  scrollSepolia: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_SCROLL_SEPOLIA,
+  incentiv: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_INCENTIV,
+  arcTestnet: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_ARC_TESTNET,
+  zama: process.env.NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_ZAMA
 };
 
 export type ChainDefinition = {
@@ -102,6 +113,19 @@ export function isChainSupported(chainId: number): boolean {
 export function getContractAddress(chainId: number): `0x${string}` | undefined {
   const chain = getChainById(chainId);
   return chain?.contractAddress !== ZERO_ADDRESS ? chain?.contractAddress : undefined;
+}
+
+/**
+ * FHE kontrat adresini chain ID'ye göre döndürür.
+ * ChainKey -> env var mapping kullanır.
+ */
+export function getFHEContractAddress(chainId: number): `0x${string}` | undefined {
+  // Chain key'ini bul (id -> key mapping)
+  const entry = Object.entries(chainData).find(([, cfg]) => cfg.id === chainId);
+  if (!entry) return undefined;
+  const chainKey = entry[0];
+  const address = FHE_CONTRACT_ADDRESSES[chainKey];
+  return (address && address !== ZERO_ADDRESS) ? (address as `0x${string}`) : undefined;
 }
 
 export function toViemChain(chain: ChainConfig) {
