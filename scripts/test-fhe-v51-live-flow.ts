@@ -217,7 +217,7 @@ async function main() {
   const payloadHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(payloadEnvelope)));
   const metadataHash = ethers.keccak256(ethers.toUtf8Bytes(JSON.stringify(metadataEnvelope)));
 
-  console.log("[1] Encrypting key parts via relayer...");
+  console.log("[1] Encrypting FHE shares via relayer...");
   const encInput = fheInstance.createEncryptedInput(V51_ADDRESS, deployer.address);
   keyParts.forEach((part) => encInput.add64(part));
   const encrypted = await encInput.encrypt();
@@ -350,8 +350,8 @@ async function main() {
   console.log("- relayer encrypt works");
   console.log("- pre-unlock decrypt blocked for all parties");
   console.log("- unlock grants receiver-only handle access");
-  console.log("- receiver userDecrypt reconstructs AES key");
-  console.log("- payload decrypt succeeds with rebuilt key");
+  console.log("- receiver userDecrypt reconstructs the message secret");
+  console.log("- payload decrypt succeeds with rebuilt secret material");
   console.log("- sender withdraw pull-payment works\n");
 }
 

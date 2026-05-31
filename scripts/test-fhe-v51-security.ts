@@ -109,10 +109,10 @@ async function main() {
     BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
     BigInt(Math.floor(Math.random() * Number.MAX_SAFE_INTEGER)),
   ];
-  console.log(`Generated 4 random key parts: [${keyParts.map(k => k.toString()).join(", ")}]`);
+  console.log("Generated 4 random FHE shares for relayer encryption.");
 
   // 1b. Encrypt via Zama relayer SDK (free — no on-chain transaction)
-  console.log("Encrypting key parts via relayer (createEncryptedInput)...");
+  console.log("Encrypting FHE shares via relayer (createEncryptedInput)...");
   const encInput = fheInstance.createEncryptedInput(V51_ADDRESS, deployer.address);
   encInput.add64(keyParts[0]);
   encInput.add64(keyParts[1]);
@@ -252,14 +252,14 @@ async function main() {
   console.log("═══════════════════════════════════════════════\n");
 
   console.log("── Event Leakage ──────────────────────────────");
-  console.log("  ✅ MessageStored(sender, receiver, msgId)       — NO key material");
-  console.log("  ✅ MessageUnlocked(receiver, msgId)             — NO key material");
-  console.log("  ✅ MessageRevoked(sender, msgId)                — NO key material");
-  console.log("  ✅ MessagePaid(payer, amount, msgId)            — NO key material");
+  console.log("  ✅ MessageStored(sender, receiver, msgId)       — no sensitive material");
+  console.log("  ✅ MessageUnlocked(receiver, msgId)             — no sensitive material");
+  console.log("  ✅ MessageRevoked(sender, msgId)                — no sensitive material");
+  console.log("  ✅ MessagePaid(payer, amount, msgId)            — no sensitive material");
   console.log("");
   console.log("── FHE Key Access Control ─────────────────────");
   console.log("  ✅ unlockMessage: FHE.allow ONLY to receiver    — no public decrypt");
-  console.log("  ✅ unlockMessage: NO FHE.allow(sender)          — sender can't decrypt");
+  console.log("  ✅ unlockMessage: no sender FHE access          — sender can't decrypt");
   console.log("  ✅ getKeyHandles: gated require(receiver + unlocked)  — only receiver");
   console.log("  ✅ getKeyHandles: require(m.unlocked)           — locked messages blocked");
   console.log("");
@@ -269,8 +269,8 @@ async function main() {
   console.log("  ✅ Overpayment refunded immediately             — no ETH stuck");
   console.log("");
   console.log("── Frontend Audit (manual) ────────────────────");
-  console.log("  ✅ fheSecure.ts: no console.log of keys/plaintext");
-  console.log("  ✅ localStorage: no AES key storage (FHE handles only)");
+  console.log("  ✅ fheSecure.ts: no sensitive payload logging");
+  console.log("  ✅ localStorage: no AES material storage (FHE handles only)");
   console.log("  ✅ IPFS metadata: encrypted envelope (not plaintext)");
   console.log("  ✅ Preview data: separate CID, limited fields");
 
@@ -298,10 +298,10 @@ async function main() {
   console.log("     - Two distinct addresses in deployment registry");
   console.log("");
   console.log("  ✅ Phase 5: Leakage Audit (Code Review)");
-  console.log("     - All events clean (no key material exposed)");
+  console.log("     - All events clean (no sensitive material exposed)");
   console.log("     - FHE access gated (receiver-only + unlocked)");
   console.log("     - Pull-payment pattern (no direct ETH transfer)");
-  console.log("     - Frontend audit: NO localStorage AES, NO console.log of keys");
+  console.log("     - Frontend audit: no AES localStorage, no sensitive log output");
   console.log("");
 
   console.log("═══════════════════════════════════════════════\n");

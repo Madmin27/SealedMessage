@@ -58,20 +58,8 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<Decr
       options
     } = params;
 
-    console.log('🔐 Starting envelope-assisted decryption...');
-    console.log('📊 Input lengths:', {
-      ciphertext: ciphertext.length,
-      authTag: authTag.length,
-      iv: iv.length,
-      senderPubKey: senderPublicKey.length,
-      envelopeCipher: receiverEnvelope.ciphertext.length
-    });
-
     // Step 1: Get receiver's encryption keypair (derived from wallet signature)
     const receiverKeyPair = await getOrCreateEncryptionKey(walletClient, userAddress);
-    console.log('✅ Receiver keypair derived from wallet');
-    console.log('📍 Receiver public key:', Array.from(receiverKeyPair.publicKey).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 20) + '...');
-    console.log('📍 Sender public key:', Array.from(senderPublicKey).map(b => b.toString(16).padStart(2, '0')).join('').slice(0, 20) + '...');
 
     // Step 2: Compute ECDH shared secret
     const role: DecryptRole = options?.role ?? 'receiver';
@@ -114,10 +102,6 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<Decr
           true // compressed
         );
 
-        console.log('✅ ECDH shared secret computed');
-        console.log('📍 Shared secret candidate:', receiverCandidate.label);
-        console.log('📍 Shared secret (first 20 bytes):', Array.from(sharedSecret.slice(0, 20)).map(b => b.toString(16).padStart(2, '0')).join(''));
-
         const sharedSecretSlice = sharedSecret.slice(1); // drop prefix byte
 
         const candidateKeys: { label: string; key: Uint8Array }[] = [
@@ -133,8 +117,6 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<Decr
           }
 
           try {
-            console.log(`🔑 Trying envelope AES key candidate: ${candidate.label}`);
-
             const sessionKeyBytes = await aesGcmDecryptBytes(
               receiverEnvelope.ciphertext,
               receiverEnvelope.authTag,
@@ -149,10 +131,6 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<Decr
 
             if (normalizedCommitment) {
               const commitment = keccak256(sessionKeyBytes).toLowerCase();
-              console.log('🔎 Session key commitment check:', {
-                expected: normalizedCommitment,
-                computed: commitment
-              });
               if (commitment !== normalizedCommitment) {
                 console.warn(`⚠️ Session key commitment mismatch for candidate ${candidate.label}`);
                 continue;
@@ -160,8 +138,6 @@ export async function decryptMessage(params: DecryptMessageParams): Promise<Decr
             }
 
             const plaintext = await aesGcmDecryptMessage(ciphertext, authTag, iv, sessionKeyBytes);
-            console.log(`✅ Message decrypted with session key (candidate: ${candidate.label})`);
-            console.log('✅ Plaintext (preview):', plaintext.slice(0, 80) + (plaintext.length > 80 ? '...' : ''));
             return { plaintext, sessionKey: sessionKeyBytes };
           } catch (candidateErr) {
             lastError = candidateErr;

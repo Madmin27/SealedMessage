@@ -6,6 +6,8 @@ import { defineChain } from "viem";
 import rawChainData from "./chains.public.json";
 
 export const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+export const DEFAULT_CHAIN_KEY = "sepolia";
+export const DEFAULT_CHAIN_ID = 11155111;
 
 const INFURA_KEY = process.env.NEXT_PUBLIC_INFURA_API_KEY || "";
 

@@ -374,8 +374,18 @@ export function FHEMessageForm({ onSubmitted }: Props) {
               ref={fileInputRef}
               type="file"
               onChange={handleFileSelect}
-              className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-blue-600 file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-blue-700"
+              className="hidden"
             />
+            <div className="flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="rounded-lg bg-blue-600 px-3 py-2 text-sm font-medium text-white hover:bg-blue-700"
+              >
+                Choose File
+              </button>
+              <span className="text-sm text-gray-400">{attachedFile ? attachedFile.name : "No file chosen"}</span>
+            </div>
             {attachedFile && (
               <div className="mt-2 flex items-center gap-2 rounded-lg bg-gray-800 p-2 text-xs text-gray-300">
                 <span>📎 {attachedFile.name}</span>

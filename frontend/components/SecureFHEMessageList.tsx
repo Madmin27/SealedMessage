@@ -53,8 +53,8 @@ function normalizeSummary(summary: any): SecureMessageRow["summary"] {
       createdAt: summary.createdAt,
       unlockTime: summary.unlockTime,
       conditionMode: condition,
-      hasTimeCondition: condition === 0 || condition === 2,
-      hasPaymentCondition: condition === 1 || condition === 2,
+      hasTimeCondition: condition === 0 || condition === 2 || condition === 3,
+      hasPaymentCondition: condition === 1 || condition === 2 || condition === 3,
       payloadCid: summary.payloadCid,
       metadataCid: summary.metadataCid,
       previewCid: summary.previewCid,
@@ -94,7 +94,7 @@ export function SecureFHEMessageList({ refreshKey }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isV51 = versionKey === "v5.1-fhe";
+  const isV51 = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe";
   const abi = isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
 
   const fetchMessages = useCallback(async () => {

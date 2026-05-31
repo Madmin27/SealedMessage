@@ -115,11 +115,11 @@ export function VersionProvider({ children }: PropsWithChildren) {
       loaded[chainId] = stored && availableKeys.includes(stored) ? stored : fallbackVersion;
     }
     // Also check non-default chains
-    for (const key of Object.keys(localStorage)) {
-      if (key.startsWith(STORAGE_KEY_PREFIX)) {
-        const chainId = parseInt(key.replace(STORAGE_KEY_PREFIX, ""), 10);
+    for (const storageName of Object.keys(localStorage)) {
+      if (storageName.startsWith(STORAGE_KEY_PREFIX)) {
+        const chainId = parseInt(storageName.replace(STORAGE_KEY_PREFIX, ""), 10);
         if (!isNaN(chainId) && !loaded[chainId]) {
-          const stored = localStorage.getItem(key);
+          const stored = localStorage.getItem(storageName);
           const fallbackVersion = getDefaultDeploymentVersion(chainId) ?? "v3";
           loaded[chainId] = stored && getChainVersionKeys(chainId).includes(stored) ? stored : fallbackVersion;
         }

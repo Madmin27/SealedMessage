@@ -1,14 +1,14 @@
 "use client";
 
-import { PropsWithChildren, useState } from "react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { PropsWithChildren, useEffect, useState } from "react";
+import { QueryClient, QueryClientProvider, useQueryClient } from "@tanstack/react-query";
 import { connectorsForWallets, midnightTheme, RainbowKitProvider } from "@rainbow-me/rainbowkit";
 import { injectedWallet, metaMaskWallet } from "@rainbow-me/rainbowkit/wallets";
 import { sequenceWallet } from "../lib/sequenceWallet";
 import "@rainbow-me/rainbowkit/styles.css";
 import { defineChain, fallback, http, type Transport } from "viem";
-import { createConfig, WagmiProvider } from "wagmi";
-import { supportedChains, type ChainDefinition } from "../lib/chains";
+import { createConfig, useAccount, useChainId, WagmiProvider } from "wagmi";
+import { DEFAULT_CHAIN_ID, DEFAULT_CHAIN_KEY, supportedChains, type ChainDefinition } from "../lib/chains";
 import { VersionProvider } from "./VersionProvider";
 
 type ChainEntry = {
@@ -52,6 +52,11 @@ const readOverrideForChain = (chainKey: string): string | undefined => {
 
 const chainEntries: ChainEntry[] = Object.entries(supportedChains)
   .filter(([, config]) => config.testnet)
+  .sort(([leftKey], [rightKey]) => {
+    if (leftKey === DEFAULT_CHAIN_KEY) return -1;
+    if (rightKey === DEFAULT_CHAIN_KEY) return 1;
+    return 0;
+  })
   .map(([key, config]) => {
     const override = readOverrideForChain(key);
     const resolvedDefault = override ?? config.rpcUrls.default;
@@ -121,7 +126,7 @@ const resolveSequenceDefaultNetwork = (): number | undefined => {
       return entry.config.id;
     }
   }
-  return chainEntries[0]?.config.id;
+  return DEFAULT_CHAIN_ID;
 };
 
 type WalletFactory = Parameters<typeof connectorsForWallets>[0][number]["wallets"][number];
@@ -171,12 +176,45 @@ export function Providers({ children }: PropsWithChildren) {
   const [queryClient] = useState(() => new QueryClient());
 
   return (
-    <WagmiProvider config={wagmiConfig} reconnectOnMount={false}>
+    <WagmiProvider config={wagmiConfig} reconnectOnMount>
       <QueryClientProvider client={queryClient}>
-        <RainbowKitProvider theme={midnightTheme()}>
+        <RainbowKitProvider theme={midnightTheme()} initialChain={DEFAULT_CHAIN_ID}>
+          <WalletEventSync />
           <VersionProvider>{children}</VersionProvider>
         </RainbowKitProvider>
       </QueryClientProvider>
     </WagmiProvider>
   );
+}
+
+function WalletEventSync() {
+  const queryClient = useQueryClient();
+  const { address, isConnected } = useAccount();
+  const chainId = useChainId();
+
+  useEffect(() => {
+    queryClient.invalidateQueries();
+  }, [address, chainId, isConnected, queryClient]);
+
+  useEffect(() => {
+    const ethereum = typeof window !== "undefined" ? (window as any).ethereum : undefined;
+    if (!ethereum?.on || !ethereum?.removeListener) {
+      return;
+    }
+
+    const notifyWalletChanged = () => {
+      queryClient.invalidateQueries();
+      window.dispatchEvent(new CustomEvent("sealedmessage:wallet-changed"));
+    };
+
+    ethereum.on("accountsChanged", notifyWalletChanged);
+    ethereum.on("chainChanged", notifyWalletChanged);
+
+    return () => {
+      ethereum.removeListener("accountsChanged", notifyWalletChanged);
+      ethereum.removeListener("chainChanged", notifyWalletChanged);
+    };
+  }, [queryClient]);
+
+  return null;
 }

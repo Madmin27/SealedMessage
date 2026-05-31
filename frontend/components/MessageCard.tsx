@@ -577,7 +577,7 @@ export function MessageCard({
     return "msg";
   }, [contractAddress, messageChainId]);
   
-  // Load initial state from localStorage (simple key, then updated with cacheKey)
+  // Load initial state from localStorage, then scope it with cacheKey.
   const [messageContent, setMessageContent] = useState<string | null>(null);
   const [activeSessionKey, setActiveSessionKey] = useState<Uint8Array | null>(null);
   const [fileMetadataState, setFileMetadataState] = useState<any>(null);

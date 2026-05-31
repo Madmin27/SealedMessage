@@ -105,8 +105,8 @@ async function main() {
   console.log("");
   console.log("   Encryption Layer:");
   console.log("   ✅ AES-256-GCM payload encryption");
-  console.log("   ✅ ECDH session key agreement");
-  console.log("   ✅ Receiver fallback key derivation");
+  console.log("   ✅ ECDH session agreement");
+  console.log("   ✅ Receiver fallback derivation");
   console.log("   ✅ Encryption working");
   console.log("");
 

@@ -43,15 +43,15 @@ export function NetworkSwitcher() {
         onClick={() => {
           setIsOpen(!isOpen);
         }}
-        className="flex w-full items-center justify-between rounded-xl border border-slate-700 bg-slate-900/60 px-4 py-3 shadow-lg transition hover:border-aurora hover:bg-slate-900/80"
+        className="flex w-full items-center justify-between rounded-2xl border border-cyber-blue/20 bg-brand-panel/80 px-4 py-3 shadow-glow-blue transition hover:border-sunset/60 hover:bg-brand-panel"
       >
         <div className="flex items-center gap-3">
           <span className="text-2xl">🌐</span>
           <div className="text-left">
-            <p className="text-sm font-semibold text-slate-200">Network Selection</p>
-            <p className="text-xs text-slate-400">
+            <p className="text-sm font-semibold text-text-light">Network Selection</p>
+            <p className="text-xs text-text-light/55">
               {mounted && chain ? (
-                <>Active: <span className="font-semibold text-green-400">{chain.name}</span></>
+                <>Active: <span className="font-semibold text-brand-cyan">{chain.name}</span></>
               ) : (
                 'Select network'
               )}
@@ -59,7 +59,7 @@ export function NetworkSwitcher() {
           </div>
         </div>
         <svg
-          className={`h-5 w-5 text-slate-400 transition-transform ${isOpen ? 'rotate-180' : ''}`}
+          className={`h-5 w-5 text-brand-cyan/80 transition-transform ${isOpen ? 'rotate-180' : ''}`}
           fill="none"
           stroke="currentColor"
           viewBox="0 0 24 24"
@@ -71,16 +71,16 @@ export function NetworkSwitcher() {
       {/* Dropdown Panel - Only render after mount to prevent hydration mismatch */}
       {mounted && isOpen && (
   <div 
-          className="absolute left-0 right-0 z-[100] mt-2 max-h-[500px] overflow-y-auto rounded-xl border-2 border-aurora bg-slate-900 shadow-2xl"
+          className="absolute left-0 right-0 z-[100] mt-2 max-h-[500px] overflow-y-auto rounded-2xl border border-cyber-blue/30 bg-brand-panel shadow-glow-blue-strong"
           style={{ minHeight: '200px' }}
         >
           {/* Header */}
-          <div className="sticky top-0 border-b border-slate-700 bg-slate-900 px-4 py-3 z-10">
+          <div className="sticky top-0 z-10 border-b border-cyber-blue/20 bg-brand-panel px-4 py-3">
             <div className="flex items-center justify-between">
-              <h3 className="font-semibold text-aurora">Network Selection</h3>
+              <h3 className="font-semibold text-brand-cyan">Network Selection</h3>
               <button
                 onClick={() => setShowAll(!showAll)}
-                className="rounded bg-slate-800 px-2 py-1 text-xs text-slate-300 hover:bg-slate-700"
+                className="rounded-full border border-cyber-blue/20 bg-midnight px-3 py-1 text-xs text-text-light/75 hover:border-sunset/50 hover:text-white"
               >
                 {showAll ? '🧪 Testnets Only' : '🌐 All Networks'}
               </button>
@@ -180,51 +180,51 @@ export function NetworkSwitcher() {
                   disabled={isActive || isLoading}
                   className={`flex w-full items-center justify-between rounded-lg border p-3 mb-2 text-left transition ${
                     isActive
-                      ? 'border-green-500 bg-green-900/30 shadow-md shadow-green-500/20'
-                      : 'border-aurora/50 bg-slate-800/80 hover:border-aurora hover:bg-slate-800 hover:shadow-lg hover:shadow-aurora/10 cursor-pointer'
+                      ? 'border-brand-cyan/60 bg-cyber-blue/10 shadow-glow-blue'
+                      : 'border-cyber-blue/20 bg-midnight/80 hover:border-sunset/50 hover:bg-brand-panel cursor-pointer'
                   }`}
                 >
                   <div className="flex-1">
                     <div className="flex items-center gap-2">
                       <span className={`font-semibold ${
-                        isActive 
-                          ? 'text-green-200' 
-                          : hasContract 
-                          ? 'text-slate-100' 
-                          : 'text-slate-500'
+                        isActive
+                            ? 'text-brand-cyan'
+                          : hasContract
+                            ? 'text-text-light'
+                            : 'text-text-light/35'
                       }`}>
                         {chainConfig.name}
                       </span>
                       {isActive && (
-                        <span className="text-green-400">✓</span>
+                        <span className="text-brand-cyan">✓</span>
                       )}
                       {hasContract && !isActive && (
-                        <span className="text-aurora text-xs">●</span>
+                        <span className="text-sunset text-xs">●</span>
                       )}
                     </div>
-                    
+
                     <div className="mt-1 flex items-center gap-2 flex-wrap">
-                      <span className={`text-xs ${hasContract ? 'text-slate-400' : 'text-slate-600'}`}>
+                      <span className={`text-xs ${hasContract ? 'text-text-light/55' : 'text-text-light/30'}`}>
                         {chainConfig.nativeCurrency.symbol}
                       </span>
-                      
+
                       {chainConfig.testnet && (
                         <span className={`rounded px-1.5 py-0.5 text-xs ${
-                          hasContract 
-                            ? 'bg-yellow-900/30 text-yellow-400' 
-                            : 'bg-slate-800/30 text-slate-600'
+                          hasContract
+                            ? 'bg-sunset/15 text-brand-orange-soft'
+                            : 'bg-midnight/40 text-text-light/35'
                         }`}>
                           Testnet
                         </span>
                       )}
                       
                       {hasContract ? (
-                        <span className="rounded bg-green-900/30 px-1.5 py-0.5 text-xs text-green-400 flex items-center gap-1">
-                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-green-400"></span>
+                        <span className="flex items-center gap-1 rounded bg-cyber-blue/10 px-1.5 py-0.5 text-xs text-brand-cyan">
+                          <span className="inline-block h-1.5 w-1.5 rounded-full bg-brand-cyan"></span>
                           Deployed
                         </span>
                       ) : (
-                        <span className="rounded bg-slate-800/30 px-1.5 py-0.5 text-xs text-slate-400">
+                        <span className="rounded bg-midnight/40 px-1.5 py-0.5 text-xs text-text-light/45">
                           🚧 Contract not deployed yet
                         </span>
                       )}
@@ -232,7 +232,7 @@ export function NetworkSwitcher() {
                   </div>
 
                   {isLoading && (
-                    <svg className="h-4 w-4 animate-spin text-aurora" viewBox="0 0 24 24">
+                    <svg className="h-4 w-4 animate-spin text-sunset" viewBox="0 0 24 24">
                       <circle
                         className="opacity-25"
                         cx="12"
@@ -256,8 +256,8 @@ export function NetworkSwitcher() {
 
           {/* Footer Info */}
           {!showAll && mainnets.length > 0 && (
-            <div className="border-t border-slate-700 bg-blue-900/20 px-4 py-3">
-              <p className="text-xs text-blue-200">
+            <div className="border-t border-cyber-blue/20 bg-cyber-blue/10 px-4 py-3">
+              <p className="text-xs text-brand-cyan">
                 💡 <strong>{mainnets.length} mainnets</strong> available. Click the &quot;All Networks&quot; button.
               </p>
             </div>

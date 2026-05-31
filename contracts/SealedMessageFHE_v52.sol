@@ -4,18 +4,17 @@ pragma solidity ^0.8.24;
 import {FHE, euint64, externalEuint64} from "@fhevm/solidity/lib/FHE.sol";
 import {ZamaEthereumConfig} from "@fhevm/solidity/config/ZamaConfig.sol";
 
-/// @title SealedMessageFHE_v51
-/// @notice V5.1 — hardened FHE-sealed message contract.
-/// @dev Security improvements over V5:
+/// @title SealedMessageFHE_v52
+/// @notice V5.2 — hardened FHE-sealed message contract with OR unlock support.
+/// @dev Security invariants remain the same as V5.1:
 ///      - getKeyHandles(): only receiver + unlocked
 ///      - unlockMessage(): FHE.allow only to receiver (no public decrypt)
 ///      - payToUnlock(): pull-payment via pendingWithdrawals
-///      - UnlockCondition enum replaces uint8 conditionMode (OR mode removed)
 ///      - No key material in events
-///      - CONTRACT_VERSION = 51, CONTRACT_VERSION_STRING = "5.1.0"
-contract SealedMessageFHE_v51 is ZamaEthereumConfig {
-    uint256 public constant CONTRACT_VERSION = 51;
-    string public constant CONTRACT_VERSION_STRING = "5.1.0";
+///      - CONTRACT_VERSION = 52, CONTRACT_VERSION_STRING = "5.2.0"
+contract SealedMessageFHE_v52 is ZamaEthereumConfig {
+    uint256 public constant CONTRACT_VERSION = 52;
+    string public constant CONTRACT_VERSION_STRING = "5.2.0";
 
     error MessageNotFound();
     error NotSender();
@@ -23,7 +22,7 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
     error MessageAlreadyUnlocked();
     error ConditionsNotMet();
 
-    enum UnlockCondition { TimeOnly, PaymentOnly, TimeAndPayment }
+    enum UnlockCondition { TimeOnly, PaymentOnly, TimeAndPayment, TimeOrPayment }
 
     struct Message {
         address sender;
@@ -100,23 +99,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
     event MessageRevoked(uint256 indexed messageId, address indexed sender);
     event MessagePaid(uint256 indexed messageId, address indexed payer, uint256 amount);
 
-    /// @notice Create a new sealed message with FHE-encrypted AES key parts.
-    /// @param receiver Address that will be able to decrypt after conditions are met.
-    /// @param unlockTime Timestamp for time-based release (0 if TimeOnly/TimeAndPayment not used).
-    /// @param requiredPayment ETH amount for payment-based release (0 if PaymentOnly/TimeAndPayment not used).
-    /// @param condition UnlockCondition enum: TimeOnly, PaymentOnly, or TimeAndPayment.
-    /// @param payloadCid IPFS CID of the encrypted payload envelope.
-    /// @param metadataCid IPFS CID of the encrypted metadata envelope.
-    /// @param previewCid IPFS CID of the public preview JSON (PublicPreviewData).
-    /// @param previewText Plaintext short preview hint shown before unlock.
-    /// @param payloadHash keccak256 of the encrypted payload (for integrity check).
-    /// @param metadataHash keccak256 of the encrypted metadata.
-    /// @param key0Handle First externalEuint64 key part handle.
-    /// @param key1Handle Second externalEuint64 key part handle.
-    /// @param key2Handle Third externalEuint64 key part handle.
-    /// @param key3Handle Fourth externalEuint64 key part handle.
-    /// @param keyInputProof Zama FHE proof for the external key handles.
-    /// @return messageId The assigned message ID.
     function sendMessage(
         address receiver,
         uint64 unlockTime,
@@ -140,8 +122,8 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         require(bytes(metadataCid).length > 0, "Empty metadataCid");
         require(keyInputProof.length > 0, "Empty key proof");
 
-        bool hasTimeCondition = condition == UnlockCondition.TimeOnly || condition == UnlockCondition.TimeAndPayment;
-        bool hasPaymentCondition = condition == UnlockCondition.PaymentOnly || condition == UnlockCondition.TimeAndPayment;
+        bool hasTimeCondition = _hasTimeCondition(condition);
+        bool hasPaymentCondition = _hasPaymentCondition(condition);
 
         if (hasTimeCondition) {
             require(unlockTime > block.timestamp, "Unlock time must be future");
@@ -195,14 +177,11 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         emit MessageStored(messageId, msg.sender, receiver);
     }
 
-    /// @notice Pay the required amount to unlock a payment-condition message.
-    ///         Uses pull-payment: ETH accumulates in pendingWithdrawals for the sender.
-    /// @param messageId The ID of the message to pay for.
     function payToUnlock(uint256 messageId) external payable nonReentrant {
         Message storage m = _messages[messageId];
         if (m.sender == address(0)) revert MessageNotFound();
         if (m.revoked) revert RevokedMessage();
-        require(m.condition != UnlockCondition.TimeOnly, "No payment condition");
+        require(_hasPaymentCondition(m.condition), "No payment condition");
         require(msg.value > 0, "No payment");
         require(!m.paid, "Already paid");
         require(msg.value >= m.requiredPayment, "Insufficient payment");
@@ -219,7 +198,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         emit MessagePaid(messageId, msg.sender, m.requiredPayment);
     }
 
-    /// @notice Withdraw accumulated payments (pull-payment pattern).
     function withdrawPayments() external nonReentrant {
         uint256 amount = pendingWithdrawals[msg.sender];
         require(amount > 0, "Nothing to withdraw");
@@ -228,9 +206,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         require(ok, "Withdraw failed");
     }
 
-    /// @notice Unlock a message, granting the receiver FHE decrypt access.
-    ///         FHE.allow is called ONLY for the receiver — no public decrypt, no sender access.
-    /// @param messageId The ID of the message to unlock.
     function unlockMessage(uint256 messageId) external {
         Message storage m = _messages[messageId];
         if (m.sender == address(0)) revert MessageNotFound();
@@ -240,8 +215,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
 
         m.unlocked = true;
 
-        // Grant FHE decrypt access only to the receiver.
-        // No public decrypt grant; sender and caller are not granted FHE access.
         FHE.allow(m.key0, m.receiver);
         FHE.allow(m.key1, m.receiver);
         FHE.allow(m.key2, m.receiver);
@@ -250,8 +223,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         emit MessageUnlocked(messageId, m.receiver);
     }
 
-    /// @notice Revoke a message before it is unlocked. Only the sender can revoke.
-    /// @param messageId The ID of the message to revoke.
     function revokeMessage(uint256 messageId) external {
         Message storage m = _messages[messageId];
         if (m.sender == address(0)) revert MessageNotFound();
@@ -263,7 +234,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         emit MessageRevoked(messageId, msg.sender);
     }
 
-    /// @notice Get a human-readable summary of a message (no key material).
     function getMessageSummary(uint256 messageId) external view returns (MessageSummary memory) {
         Message storage m = _messages[messageId];
         if (m.sender == address(0)) revert MessageNotFound();
@@ -286,7 +256,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         });
     }
 
-    /// @notice Get access status of a message (condition evaluation, no key material).
     function getMessageAccess(uint256 messageId) external view returns (MessageAccess memory) {
         Message storage m = _messages[messageId];
         if (m.sender == address(0)) revert MessageNotFound();
@@ -302,13 +271,6 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         });
     }
 
-    /// @notice Get the 4 key handles for FHE userDecrypt.
-    /// @dev Restricted: only the receiver can call, and only after the message is unlocked.
-    /// @param messageId The ID of the message.
-    /// @return key0 The first bytes32 key handle.
-    /// @return key1 The second bytes32 key handle.
-    /// @return key2 The third bytes32 key handle.
-    /// @return key3 The fourth bytes32 key handle.
     function getKeyHandles(uint256 messageId) external view returns (bytes32 key0, bytes32 key1, bytes32 key2, bytes32 key3) {
         Message storage m = _messages[messageId];
         if (m.sender == address(0)) revert MessageNotFound();
@@ -318,17 +280,14 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         return (m.keyHandle0, m.keyHandle1, m.keyHandle2, m.keyHandle3);
     }
 
-    /// @notice Get list of message IDs sent by a user.
     function getSentMessages(address user) external view returns (uint256[] memory) {
         return _sentMessages[user];
     }
 
-    /// @notice Get list of message IDs received by a user.
     function getReceivedMessages(address user) external view returns (uint256[] memory) {
         return _receivedMessages[user];
     }
 
-    /// @notice Check if a message exists and its status.
     function messageExists(uint256 messageId) external view returns (bool exists, bool revoked, bool unlocked) {
         Message storage m = _messages[messageId];
         exists = m.sender != address(0);
@@ -336,24 +295,37 @@ contract SealedMessageFHE_v51 is ZamaEthereumConfig {
         unlocked = m.unlocked;
     }
 
-    /// @dev Evaluate whether all conditions for unlocking are met.
-    ///      No OR mode — each UnlockCondition has a single deterministic path.
     function _conditionsMet(Message storage m) private view returns (bool) {
+        bool timeOk = !_hasTimeCondition(m.condition) || block.timestamp >= m.unlockTime;
+        bool paymentOk = !_hasPaymentCondition(m.condition) || m.paid;
+
         if (m.condition == UnlockCondition.TimeOnly) {
-            return block.timestamp >= m.unlockTime;
-        } else if (m.condition == UnlockCondition.PaymentOnly) {
-            return m.paid;
-        } else if (m.condition == UnlockCondition.TimeAndPayment) {
-            return block.timestamp >= m.unlockTime && m.paid;
+            return timeOk;
+        }
+        if (m.condition == UnlockCondition.PaymentOnly) {
+            return paymentOk;
+        }
+        if (m.condition == UnlockCondition.TimeAndPayment) {
+            return timeOk && paymentOk;
+        }
+        if (m.condition == UnlockCondition.TimeOrPayment) {
+            return timeOk || paymentOk;
         }
         return false;
     }
 
-    /// @dev Returns true if either no time condition, or time condition is satisfied.
     function _isTimeMet(Message storage m) private view returns (bool) {
-        if (m.condition == UnlockCondition.TimeOnly || m.condition == UnlockCondition.TimeAndPayment) {
+        if (_hasTimeCondition(m.condition)) {
             return block.timestamp >= m.unlockTime;
         }
         return true;
+    }
+
+    function _hasTimeCondition(UnlockCondition condition) private pure returns (bool) {
+        return condition == UnlockCondition.TimeOnly || condition == UnlockCondition.TimeAndPayment || condition == UnlockCondition.TimeOrPayment;
+    }
+
+    function _hasPaymentCondition(UnlockCondition condition) private pure returns (bool) {
+        return condition == UnlockCondition.PaymentOnly || condition == UnlockCondition.TimeAndPayment || condition == UnlockCondition.TimeOrPayment;
     }
 }

@@ -92,9 +92,9 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const { address: userAddress } = useAccount();
   const contractAddress = useContractAddress();
   const versionKey = useContractVersion();
-  const isV51 = versionKey === "v5.1-fhe";
+  const isV51 = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe";
   const abi = isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
-  const versionBadge = isV51 ? "V5.1-FHE" : "V5-FHE";
+  const versionBadge = versionKey === "v5.2-fhe" ? "V5.2-FHE" : isV51 ? "V5.1-FHE" : "V5-FHE";
   const [isWorking, setIsWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -204,7 +204,8 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const logicLabel = isV51
     ? (summary.conditionMode === 0 ? "Time"
       : summary.conditionMode === 1 ? "Payment"
-      : "Time + Payment")
+      : summary.conditionMode === 2 ? "Time + Payment"
+      : "Time OR Payment")
     : summary.hasTimeCondition && summary.hasPaymentCondition
       ? (summary.conditionMode === 1 ? "Time OR payment" : "Time AND payment")
       : summary.hasTimeCondition
@@ -388,31 +389,31 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
     }
 
     return (
-      <div className="mt-2 rounded border border-emerald-700/30 bg-emerald-950/15 p-2.5">
+      <div className="mt-2 rounded-xl border border-cyber-blue/20 bg-midnight/70 p-2.5">
         {/* Row 1: type icon + type label + character count */}
         <div className="mb-1.5 flex items-center gap-2">
           <span className="text-base">{icon}</span>
-          <span className="text-xs font-medium text-emerald-200">{typeLabel}</span>
+          <span className="text-xs font-medium text-brand-cyan">{typeLabel}</span>
           {pd?.messageLength !== undefined && (
-            <span className="text-xs text-gray-400">{pd.messageLength} chars</span>
+            <span className="text-xs text-text-light/45">{pd.messageLength} chars</span>
           )}
         </div>
 
         {/* Row 2: preview text */}
-        <div className="text-xs italic text-emerald-100/80">
+        <div className="text-xs italic text-text-light/80">
           &ldquo;{text}&rdquo;
         </div>
 
         {/* Row 3: file info (when available) */}
         {(pd?.fileInfo || (pd && pd.type !== "text")) && pd?.fileInfo && (
-          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-400">
+          <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-text-light/45">
             {/* Thumbnail row */}
             {(pd.type === "text+image" && thumbnailUrl) && (
               <div className="flex-shrink-0">
                 <img
                   src={thumbnailUrl}
                   alt="thumb"
-                  className="h-10 w-10 rounded border border-gray-600 object-cover"
+                  className="h-10 w-10 rounded border border-cyber-blue/20 object-cover"
                 />
               </div>
             )}
@@ -434,21 +435,21 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   }, []);
 
   return (
-    <div className="rounded-xl border border-emerald-500/20 bg-gray-900/70 p-4">
+    <div className="rounded-[24px] border border-cyber-blue/20 bg-brand-panel/70 p-4 shadow-glow-blue">
       {/* ── Header row (always visible) ─────────────────────────────── */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <span className="rounded bg-emerald-600/20 px-2 py-0.5 text-xs text-emerald-300">{versionBadge}</span>
+          <span className="rounded-full border border-cyber-blue/20 bg-cyber-blue/10 px-2 py-0.5 text-xs text-brand-cyan">{versionBadge}</span>
           <span className="text-sm text-white">#{id.toString()}</span>
           {alreadyDecrypted && (
-            <span className="text-xs text-purple-400">🔓 Decrypted</span>
+            <span className="text-xs text-sunset">🔓 Decrypted</span>
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-gray-400">{statusLabel}</span>
+          <span className="text-xs text-text-light/45">{statusLabel}</span>
           <button
             onClick={toggleCollapse}
-            className="rounded p-1 text-gray-400 hover:bg-gray-700 hover:text-white"
+            className="rounded-lg p-1 text-text-light/45 hover:bg-midnight hover:text-white"
             title={isCollapsed ? "Expand" : "Collapse"}
           >
             {isCollapsed ? "▶" : "▼"}
@@ -457,7 +458,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
       </div>
 
       {/* ── Summary + preview (always visible) ──────────────────────── */}
-      <div className="mt-2 space-y-1 text-sm text-gray-300">
+      <div className="mt-2 space-y-1 text-sm text-text-light/80">
         <div>From: <span className="font-mono text-xs">{summary.sender}</span></div>
         <div>To: <span className="font-mono text-xs">{summary.receiver}</span></div>
         <div>Created: {dayjs(Number(summary.createdAt) * 1000).fromNow()}</div>
@@ -472,13 +473,13 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
         {!access.isUnlocked && !access.isRevoked && (
           <div className="mt-1 flex flex-wrap gap-x-4 gap-y-0.5 text-xs">
             {timeRemainingStr && (
-              <span className="text-yellow-300">⏳ {timeRemainingStr} remaining</span>
+              <span className="text-brand-orange-soft">⏳ {timeRemainingStr} remaining</span>
             )}
             {summary.hasPaymentCondition && paymentRemaining > 0n && (
-              <span className="text-yellow-300">💰 {formatEther(paymentRemaining)} ETH needed</span>
+              <span className="text-brand-orange-soft">💰 {formatEther(paymentRemaining)} ETH needed</span>
             )}
             {!timeRemainingStr && !access.isPaymentMet && paymentRemaining <= 0n && (
-              <span className="text-yellow-300">⏰ Waiting for unlock</span>
+              <span className="text-brand-orange-soft">⏰ Waiting for unlock</span>
             )}
           </div>
         )}
@@ -496,7 +497,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
 
           {/* Decrypted message content */}
           {content !== null && (
-            <div className="mt-3 whitespace-pre-wrap rounded bg-gray-800/80 p-3 text-sm text-white">
+            <div className="mt-3 whitespace-pre-wrap rounded-2xl border border-cyber-blue/15 bg-midnight/80 p-3 text-sm text-white">
               {content || "(empty message)"}
             </div>
           )}
@@ -504,7 +505,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
             <div className="mt-3">
               {/* File info badge */}
               {decryptedAttachmentMeta && (
-                <div className="mb-1.5 flex items-center gap-2 text-xs text-gray-400">
+                <div className="mb-1.5 flex items-center gap-2 text-xs text-text-light/45">
                   <span>{getFileTypeLabel(attachmentType ?? "", decryptedAttachmentMeta.name)}</span>
                   <span className="max-w-[200px] truncate font-mono">{decryptedAttachmentMeta.name}</span>
                   <span>({formatSizeShort(decryptedAttachmentMeta.size)})</span>
@@ -513,8 +514,8 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
               {attachmentType?.startsWith("image/") ? (
                 <>
                   {imageLoading && (
-                    <div className="flex h-48 items-center justify-center rounded-lg bg-gray-800/60">
-                      <div className="h-8 w-8 animate-spin rounded-full border-2 border-emerald-400 border-t-transparent" />
+                    <div className="flex h-48 items-center justify-center rounded-xl bg-midnight/70">
+                      <div className="h-8 w-8 animate-spin rounded-full border-2 border-cyber-blue border-t-transparent" />
                     </div>
                   )}
                   <img
@@ -526,7 +527,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
                   />
                 </>
               ) : (
-                <a href={attachmentUrl} download className="text-sm text-emerald-300 underline">
+                <a href={attachmentUrl} download className="text-sm text-brand-cyan underline">
                   Download decrypted attachment
                 </a>
               )}
@@ -539,7 +540,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
               <button
                 disabled={isWorking}
                 onClick={() => callContract("payToUnlock", paymentRemaining)}
-                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className="rounded-xl bg-gradient-to-r from-cyber-blue to-sunset px-3 py-1.5 text-xs font-medium text-midnight shadow-glow-orange disabled:opacity-50"
               >
                 Pay {formatEther(paymentRemaining)} ETH
               </button>
@@ -548,7 +549,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
               <button
                 disabled={isWorking}
                 onClick={() => callContract("unlockMessage")}
-                className="rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className="rounded-xl border border-cyber-blue/25 bg-cyber-blue/10 px-3 py-1.5 text-xs font-medium text-brand-cyan disabled:opacity-50"
               >
                 Release Zama FHE key
               </button>
@@ -557,7 +558,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
               <button
                 disabled={isWorking}
                 onClick={handleDecrypt}
-                className="rounded-lg bg-purple-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className="rounded-xl border border-sunset/35 bg-sunset/10 px-3 py-1.5 text-xs font-medium text-brand-orange-soft disabled:opacity-50"
               >
                 Decrypt payload
               </button>
@@ -565,7 +566,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
             {alreadyDecrypted && (
               <button
                 onClick={() => setIsCollapsed(true)}
-                className="rounded-lg bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-300 hover:bg-gray-600"
+                className="rounded-xl bg-midnight px-3 py-1.5 text-xs font-medium text-text-light/75 hover:bg-brand-panel"
               >
                 Close
               </button>
@@ -574,7 +575,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
               <button
                 disabled={isWorking}
                 onClick={() => callContract("revokeMessage")}
-                className="rounded-lg bg-red-600 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
+                className="rounded-xl bg-red-600/90 px-3 py-1.5 text-xs font-medium text-white disabled:opacity-50"
               >
                 Revoke
               </button>
@@ -585,8 +586,8 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
 
       {/* Collapsed hint */}
       {isCollapsed && alreadyDecrypted && (
-        <div className="mt-2 text-xs text-gray-500 italic">
-          🔓 Decrypted. <button onClick={toggleCollapse} className="text-emerald-400 underline">Click to expand</button> (no re-payment needed).
+        <div className="mt-2 text-xs italic text-text-light/45">
+          🔓 Decrypted. <button onClick={toggleCollapse} className="text-brand-cyan underline">Click to expand</button> (no re-payment needed).
         </div>
       )}
     </div>

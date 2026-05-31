@@ -2,39 +2,73 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Tech-Noir / Fütüristik UI Teması */
+/* SealedMessage Brand Theme */
 :root {
   color-scheme: dark;
-  
-  /* Ana Renk Paleti - Tech-Noir */
-  --color-background-dark: #0A0A1A;
-  --color-primary-blue: #00BFFF;
-  --color-primary-green: #39FF14;
-  --color-primary-purple: #BF00FF;
-  --color-primary-orange: #FF8C00;
-  --color-primary-yellow: #FFD700;
-  --color-text-light: #E0E0FF;
-  --color-text-dark: #333333;
-  --color-parchment-light: #F5DEB3;
-  --color-parchment-dark: #D2B48C;
-  
-  /* Gölge ve Parlama Ayarları */
-  --shadow-blue-light: 0 0 8px var(--color-primary-blue), 0 0 12px var(--color-primary-blue);
-  --shadow-blue-strong: 0 0 30px rgba(0, 191, 255, 0.8), inset 0 0 20px rgba(0, 191, 255, 0.4);
-  --shadow-green-light: 0 0 8px var(--color-primary-green), 0 0 12px var(--color-primary-green);
-  --shadow-purple-light: 0 0 8px var(--color-primary-purple), 0 0 12px var(--color-primary-purple);
-  --shadow-orange-light: 0 0 8px var(--color-primary-orange), 0 0 12px var(--color-primary-orange);
-  --shadow-yellow-light: 0 0 8px rgba(255, 215, 0, 0.6);
+  --color-background-dark: #030717;
+  --color-background-elevated: #07112c;
+  --color-background-panel: #0a1027;
+  --color-primary-blue: #10a9ff;
+  --color-primary-indigo: #3d6cff;
+  --color-primary-cyan: #18d1ff;
+  --color-primary-orange: #f6b21a;
+  --color-primary-orange-soft: #ffd15c;
+  --color-text-light: #eef5ff;
+  --color-text-dark: #081024;
+  --color-parchment-light: #f7fbff;
+  --color-parchment-dark: #b6cbff;
+
+  --shadow-blue-light: 0 0 14px rgba(16, 169, 255, 0.48), 0 0 28px rgba(61, 108, 255, 0.25);
+  --shadow-blue-strong: 0 24px 64px rgba(3, 10, 38, 0.68), 0 0 42px rgba(16, 169, 255, 0.16);
+  --shadow-green-light: 0 0 10px rgba(24, 209, 255, 0.38);
+  --shadow-purple-light: 0 0 14px rgba(122, 61, 255, 0.3);
+  --shadow-orange-light: 0 0 14px rgba(246, 178, 26, 0.42), 0 0 26px rgba(255, 209, 92, 0.16);
+  --shadow-yellow-light: 0 0 10px rgba(255, 209, 92, 0.36);
   --shadow-generic-dark: 2px 2px 5px rgba(0, 0, 0, 0.3);
 }
 
 body {
   font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background-color: var(--color-background-dark);
+  background:
+    radial-gradient(circle at 14% 12%, rgba(24, 209, 255, 0.12), transparent 24%),
+    radial-gradient(circle at 88% 86%, rgba(122, 61, 255, 0.18), transparent 20%),
+    linear-gradient(180deg, #050818 0%, #030613 52%, #02040d 100%);
   color: var(--color-text-light);
   line-height: 1.6;
   overflow-x: hidden;
   min-height: 100vh;
+  position: relative;
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(rgba(30, 55, 123, 0.08) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(30, 55, 123, 0.08) 1px, transparent 1px);
+  background-size: 104px 104px;
+  mask-image: linear-gradient(180deg, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.24));
+  z-index: -2;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 8% 8%, rgba(122, 61, 255, 0.18), transparent 10%),
+    radial-gradient(circle at 92% 86%, rgba(24, 209, 255, 0.14), transparent 12%),
+    linear-gradient(120deg, transparent 0 7%, rgba(16, 169, 255, 0.1) 7% 7.2%, transparent 7.2% 58%, rgba(122, 61, 255, 0.12) 58% 58.2%, transparent 58.2% 100%);
+  opacity: 0.8;
+  z-index: -1;
+}
+
+::selection {
+  background: rgba(87, 216, 255, 0.28);
+  color: #ffffff;
 }
 
 /* Link Stilleri */
@@ -44,13 +78,13 @@ a {
 }
 
 a:hover {
-  color: var(--color-primary-green);
+  color: var(--color-primary-cyan);
   text-shadow: var(--shadow-green-light);
 }
 
 /* Başlık Parlama Efekti */
 h1, h2, h3, h4, h5, h6 {
-  text-shadow: 0 0 5px rgba(0, 191, 255, 0.4);
+  text-shadow: 0 0 12px rgba(16, 169, 255, 0.18);
 }
 
 /* Scrollbar Stili */
@@ -63,10 +97,10 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-primary-blue);
+  background: linear-gradient(180deg, var(--color-primary-blue), var(--color-primary-orange));
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-primary-green);
+  background: linear-gradient(180deg, var(--color-primary-cyan), var(--color-primary-orange-soft));
 }

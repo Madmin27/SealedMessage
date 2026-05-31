@@ -28,20 +28,25 @@ type AttachmentMeta = {
   mimeType: string;
 };
 
-type UnlockConditionValue = 0 | 1 | 2;
+type UnlockConditionValue = 0 | 1 | 2 | 3;
+type ConditionLogic = "AND" | "OR";
 const UNLOCK_CONDITIONS: { value: UnlockConditionValue; label: string; desc: string }[] = [
   { value: 0, label: "Time Only", desc: "Release after a specific time" },
   { value: 1, label: "Payment Only", desc: "Release after payment" },
   { value: 2, label: "Time + Payment", desc: "Both time and payment must pass" },
+  { value: 3, label: "Time OR Payment", desc: "Either time or payment can unlock" },
 ];
 
 const TIME_PRESETS = [
-  { label: "1 min", seconds: 60 },
+  { label: "1 min (Dev/Test)", seconds: 60 },
   { label: "5 min", seconds: 5 * 60 },
   { label: "10 min", seconds: 10 * 60 },
   { label: "1 hour", seconds: 60 * 60 },
   { label: "1 day", seconds: 24 * 60 * 60 },
 ] as const;
+
+const SAFETY_BUFFER_SECONDS = 90;
+const MIN_CLIENT_UNLOCK_DELAY_SECONDS = 180;
 
 function toDateTimeLocalValue(timestampMs: number): string {
   const date = new Date(timestampMs);
@@ -60,6 +65,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
   const { chain } = useNetwork();
   const contractAddress = useContractAddress();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const isV52 = versionKey === "v5.2-fhe";
   const nativeDecimals = chain?.nativeCurrency?.decimals ?? 18;
   const nativeSymbol = chain?.nativeCurrency?.symbol ?? "ETH";
 
@@ -68,13 +74,14 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
   const [timeEnabled, setTimeEnabled] = useState(true);
   const [timeMode, setTimeMode] = useState<"preset" | "custom">("preset");
-  const [presetSeconds, setPresetSeconds] = useState<number>(60);
-  const [unlockAt, setUnlockAt] = useState(() => toDateTimeLocalValue(Date.now() + 60_000));
+  const [presetSeconds, setPresetSeconds] = useState<number>(5 * 60);
+  const [unlockAt, setUnlockAt] = useState(() => toDateTimeLocalValue(Date.now() + 5 * 60_000));
   const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [paymentInput, setPaymentInput] = useState("");
   const [unlockCondition, setUnlockCondition] = useState<UnlockConditionValue>(
     timeEnabled && paymentEnabled ? 2 : timeEnabled ? 0 : 1
   );
+  const [conditionLogic, setConditionLogic] = useState<ConditionLogic>("AND");
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
@@ -103,15 +110,29 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
     }
   }, [nativeDecimals, paymentEnabled, paymentInput]);
 
-  const unlockTimestamp = useMemo(() => {
+  const resolveUnlockTimestamp = useCallback((nowSeconds = Math.floor(Date.now() / 1000)) => {
     if (!timeEnabled) return 0;
     if (timeMode === "preset") {
-      return Math.floor(Date.now() / 1000) + presetSeconds;
+      const effectiveDelay = Math.max(presetSeconds, MIN_CLIENT_UNLOCK_DELAY_SECONDS);
+      return nowSeconds + effectiveDelay + SAFETY_BUFFER_SECONDS;
     }
     if (!unlockAt) return 0;
     const value = new Date(unlockAt).getTime();
     return Number.isFinite(value) ? Math.floor(value / 1000) : 0;
   }, [presetSeconds, timeEnabled, timeMode, unlockAt]);
+
+  const unlockTimestamp = useMemo(() => resolveUnlockTimestamp(), [resolveUnlockTimestamp]);
+
+  const bothConditionsEnabled = timeEnabled && paymentEnabled;
+  const isUnsupportedOrCondition = bothConditionsEnabled && conditionLogic === "OR" && !isV52;
+  const unlockTimePreview = useMemo(() => {
+    if (!timeEnabled || unlockTimestamp <= 0) return null;
+    const date = new Date(unlockTimestamp * 1000);
+    return {
+      local: date.toLocaleString(),
+      utc: date.toISOString().replace("T", " ").replace(".000Z", " UTC"),
+    };
+  }, [timeEnabled, unlockTimestamp]);
 
   const conditionSummary = useMemo(() => {
     const cond = UNLOCK_CONDITIONS.find((c) => c.value === unlockCondition);
@@ -123,19 +144,40 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
     if (cond.value === 1) {
       return `Payment Only (${paymentInput.trim() || "..."} ${nativeSymbol})`;
     }
+    if (cond.value === 3) {
+      const selectedPreset = TIME_PRESETS.find((preset) => preset.seconds === presetSeconds);
+      return `Time OR Payment (time: ${timeMode === "preset" ? selectedPreset?.label ?? `${presetSeconds}s` : "custom"}, payment: ${paymentInput.trim() || "..."} ${nativeSymbol})`;
+    }
     const selectedPreset = TIME_PRESETS.find((preset) => preset.seconds === presetSeconds);
     return `Time + Payment (time: ${timeMode === "preset" ? selectedPreset?.label ?? `${presetSeconds}s` : "custom"}, payment: ${paymentInput.trim() || "..."} ${nativeSymbol})`;
-  }, [unlockCondition, nativeSymbol, paymentInput, presetSeconds, timeEnabled, timeMode]);
+  }, [unlockCondition, nativeSymbol, paymentInput, presetSeconds, timeMode]);
 
   const isFormValid = useMemo(() => {
     if (!isConnected || !userAddress || !contractAddress) return false;
     if (!receiver || !isAddress(receiver) || receiver.toLowerCase() === userAddress.toLowerCase()) return false;
     if (!content.trim() && !attachedFile) return false;
     if (!timeEnabled && !paymentEnabled) return false;
-    if (timeEnabled && unlockTimestamp <= Math.floor(Date.now() / 1000)) return false;
+    if (timeEnabled && unlockTimestamp <= Math.floor(Date.now() / 1000) + SAFETY_BUFFER_SECONDS) return false;
     if (paymentEnabled && parsedPayment <= 0n) return false;
+    if (isUnsupportedOrCondition) return false;
     return true;
-  }, [attachedFile, content, contractAddress, isConnected, parsedPayment, paymentEnabled, receiver, timeEnabled, unlockTimestamp, userAddress]);
+  }, [attachedFile, content, contractAddress, isConnected, isUnsupportedOrCondition, parsedPayment, paymentEnabled, receiver, timeEnabled, unlockTimestamp, userAddress]);
+
+  useEffect(() => {
+    if (timeEnabled && paymentEnabled) {
+      setUnlockCondition(conditionLogic === "OR" && isV52 ? 3 : 2);
+      return;
+    }
+    if (timeEnabled) {
+      setUnlockCondition(0);
+      setConditionLogic("AND");
+      return;
+    }
+    if (paymentEnabled) {
+      setUnlockCondition(1);
+      setConditionLogic("AND");
+    }
+  }, [conditionLogic, isV52, paymentEnabled, timeEnabled]);
 
   const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -153,8 +195,8 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
     setAttachedFile(null);
     setTimeEnabled(true);
     setTimeMode("preset");
-    setPresetSeconds(60);
-    setUnlockAt(toDateTimeLocalValue(Date.now() + 60_000));
+    setPresetSeconds(5 * 60);
+    setUnlockAt(toDateTimeLocalValue(Date.now() + 5 * 60_000));
     setPaymentEnabled(false);
     setPaymentInput("");
     setUnlockCondition(0);
@@ -173,6 +215,10 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
   const handleSubmit = useCallback(async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!isFormValid || !contractAddress || !userAddress || isSubmitting) return;
+    if (isUnsupportedOrCondition) {
+      setError("OR logic is only supported by V5.2-FHE. Select the V5.2 deployment or switch back to AND.");
+      return;
+    }
 
     setIsSubmitting(true);
     setError(null);
@@ -295,13 +341,24 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
 
       const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
-      const formAbi = versionKey === "v5.1-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+      const signerAddress = await signer.getAddress();
+      if (signerAddress.toLowerCase() !== userAddress.toLowerCase()) {
+        throw new Error("Wallet address changed while preparing the transaction. Please review the form with the active MetaMask address and try again.");
+      }
+      const formAbi = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
       const contract = new ethers.Contract(contractAddress, formAbi, signer);
+      const txUnlockTimestamp = resolveUnlockTimestamp();
+
+      if (timeEnabled && txUnlockTimestamp <= Math.floor(Date.now() / 1000) + SAFETY_BUFFER_SECONDS) {
+        setError("Unlock time moved too close while preparing the transaction. Please choose a later time and try again.");
+        setIsSubmitting(false);
+        return;
+      }
 
       setStatusMessage("Sending transaction to blockchain...");
       const tx = await contract.sendMessage(
         receiver as `0x${string}`,
-        unlockTimestamp,
+        txUnlockTimestamp,
         paymentEnabled ? parsedPayment : 0n,
         unlockCondition,
         payloadUpload.cid,
@@ -329,17 +386,27 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
     } finally {
       setIsSubmitting(false);
     }
-  }, [attachedFile, content, contractAddress, isFormValid, isSubmitting, onSubmitted, parsedPayment, paymentEnabled, receiver, resetForm, unlockTimestamp, uploadJson, userAddress, versionKey]);
+  }, [attachedFile, content, contractAddress, isFormValid, isSubmitting, isUnsupportedOrCondition, onSubmitted, parsedPayment, paymentEnabled, receiver, resetForm, resolveUnlockTimestamp, timeEnabled, unlockCondition, uploadJson, userAddress, versionKey]);
 
   return (
-    <div className="w-full max-w-2xl mx-auto rounded-xl border border-emerald-500/30 bg-gray-900/80 p-6 backdrop-blur-sm">
-      <h2 className="mb-5 flex items-center gap-2 text-xl font-bold text-white">
-        <span>🛡️</span>
-        Secure FHE Message
-        <span className="rounded bg-emerald-600/20 px-2 py-0.5 text-xs text-emerald-300">{versionKey === "v5.1-fhe" ? "V5.1-FHE" : "V5-FHE"}</span>
-      </h2>
+    <div className="mx-auto w-full max-w-2xl rounded-[24px] border border-cyber-blue/25 bg-[linear-gradient(180deg,rgba(7,12,31,0.96),rgba(4,7,19,0.98))] p-5 shadow-glow-blue md:p-6">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-xl font-bold text-white">
+            <span>🛡️</span>
+            Secure FHE Message
+            <span className="rounded-full border border-cyber-blue/25 bg-cyber-blue/10 px-2 py-0.5 text-xs text-brand-cyan">{versionKey === "v5.2-fhe" ? "V5.2-FHE" : versionKey === "v5.1-fhe" ? "V5.1-FHE" : "V5-FHE"}</span>
+          </h2>
+          <p className="mt-1 text-xs text-text-light/50">
+            Active wallet: <span className="font-mono text-brand-cyan">{userAddress ? `${userAddress.slice(0, 6)}...${userAddress.slice(-4)}` : "Not connected"}</span>
+          </p>
+        </div>
+        <div className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-300">
+          Sepolia FHE
+        </div>
+      </div>
 
-      <div className="mb-4 rounded-lg border border-emerald-500/20 bg-emerald-950/20 p-3 text-xs text-emerald-200">
+      <div className="mb-4 rounded-2xl border border-cyber-blue/25 bg-cyber-blue/10 p-3 text-xs leading-5 text-brand-cyan">
         Message access is gated with Zama FHE. The message stays sealed until the selected unlock conditions are satisfied.
       </div>
 
@@ -348,31 +415,46 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
 
       <form className="space-y-4" onSubmit={handleSubmit}>
         <div>
-          <label className="mb-1 block text-sm text-gray-300">Receiver</label>
-          <input value={receiver} onChange={(event) => setReceiver(event.target.value)} placeholder="0x..." className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Receiver</label>
+          <input value={receiver} onChange={(event) => setReceiver(event.target.value)} placeholder="0x..." className="w-full rounded-xl border border-cyber-blue/15 bg-midnight/90 px-3 py-2 text-sm text-white outline-none focus:border-cyber-blue" />
         </div>
 
         <div>
-          <label className="mb-1 block text-sm text-gray-300">Encrypted message</label>
-          <textarea value={content} onChange={(event) => setContent(event.target.value)} rows={4} placeholder="Write the private message" className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Message</label>
+          <textarea value={content} onChange={(event) => setContent(event.target.value)} rows={5} placeholder="Write and seal" className="w-full rounded-xl border border-cyber-blue/25 bg-midnight/90 px-3 py-3 text-sm text-white outline-none transition focus:border-cyber-blue focus:shadow-glow-blue" />
         </div>
 
         <div>
-          <label className="mb-1 block text-sm text-gray-300">Public preview</label>
-          <div className="rounded-lg border border-emerald-700/40 bg-emerald-950/20 px-3 py-2 text-sm text-emerald-100">
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Public preview</label>
+          <div className="rounded-xl border border-cyber-blue/20 bg-midnight/80 px-3 py-2 text-sm text-text-light">
             {generatePreviewText(content, attachedFile)}
           </div>
           <p className="mt-1 text-xs text-gray-500">Auto-generated preview visible to everyone. Helps recipients identify your message.</p>
         </div>
 
         <div>
-          <label className="mb-1 block text-sm text-gray-300">Attachment</label>
-          <input ref={fileInputRef} type="file" onChange={handleFileChange} className="w-full text-sm text-gray-400 file:mr-3 file:rounded-lg file:border-0 file:bg-emerald-600 file:px-3 file:py-1.5 file:text-sm file:text-white hover:file:bg-emerald-700" />
+          <label className="mb-1 block text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Attachment</label>
+          <input ref={fileInputRef} type="file" onChange={handleFileChange} className="hidden" />
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="rounded-xl bg-gradient-to-r from-cyber-blue to-sunset px-3 py-2 text-sm font-semibold text-white hover:brightness-110"
+            >
+              Choose File
+            </button>
+            <span className="text-sm text-gray-400">{attachedFile ? attachedFile.name : "No file chosen"}</span>
+          </div>
           {attachedFile && <div className="mt-2 text-xs text-gray-400">{attachedFile.name} ({Math.ceil(attachedFile.size / 1024)} KB)</div>}
         </div>
 
-        <div className="space-y-4 rounded-lg border border-gray-700 bg-gray-800/40 p-4">
-          <div className="flex flex-wrap items-center gap-3">
+        <div className="space-y-4 rounded-2xl border border-cyber-blue/25 bg-midnight/55 p-4">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Unlock conditions</p>
+              <p className="mt-1 text-xs text-text-light/45">Use time, payment, or both. V5.2 supports real OR on-chain; V5.1 stays AND-only.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-3">
             <label className="flex items-center gap-2 text-sm text-gray-300">
               <input type="checkbox" checked={timeEnabled} onChange={(event) => setTimeEnabled(event.target.checked)} />
               Time condition
@@ -381,11 +463,14 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
               <input type="checkbox" checked={paymentEnabled} onChange={(event) => setPaymentEnabled(event.target.checked)} />
               Payment condition
             </label>
+            </div>
           </div>
 
           {timeEnabled && (
-            <div className="space-y-3 rounded-lg border border-gray-700 bg-gray-900/40 p-3">
-              <div className="flex items-center gap-4 text-xs text-gray-400">
+            <div className="space-y-3 rounded-2xl border border-cyber-blue/35 bg-[linear-gradient(180deg,rgba(4,28,46,0.62),rgba(2,17,31,0.72))] p-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <span className="text-sm font-semibold text-brand-cyan">Unlock time</span>
+                <div className="flex items-center gap-4 text-xs text-gray-400">
                 <label className="flex items-center gap-2">
                   <input type="radio" name="secure-time-mode" checked={timeMode === "preset"} onChange={() => setTimeMode("preset")} />
                   Quick presets
@@ -394,10 +479,11 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
                   <input type="radio" name="secure-time-mode" checked={timeMode === "custom"} onChange={() => setTimeMode("custom")} />
                   Custom date
                 </label>
+                </div>
               </div>
 
               {timeMode === "preset" ? (
-                <div className="flex flex-wrap gap-2">
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                   {TIME_PRESETS.map((preset) => {
                     const active = preset.seconds === presetSeconds;
                     return (
@@ -405,10 +491,10 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
                         key={preset.seconds}
                         type="button"
                         onClick={() => setPresetSeconds(preset.seconds)}
-                        className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                        className={`min-h-10 rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
                           active
-                            ? "border-emerald-500 bg-emerald-600/20 text-emerald-200"
-                            : "border-gray-700 bg-gray-800 text-gray-300 hover:border-emerald-500/50 hover:text-white"
+                            ? "border-sunset bg-sunset/15 text-brand-orange-soft"
+                            : "border-cyber-blue/15 bg-brand-panel text-text-light/75 hover:border-cyber-blue/50 hover:text-white"
                         }`}
                       >
                         {preset.label}
@@ -419,39 +505,73 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
               ) : (
                 <div>
                   <label className="mb-1 block text-sm text-gray-300">Unlock after</label>
-                  <input type="datetime-local" value={unlockAt} onChange={(event) => setUnlockAt(event.target.value)} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+                  <input type="datetime-local" value={unlockAt} onChange={(event) => setUnlockAt(event.target.value)} className="w-full rounded-xl border border-cyber-blue/15 bg-brand-panel px-3 py-2 text-sm text-white outline-none focus:border-cyber-blue" />
+                </div>
+              )}
+
+              {unlockTimePreview && (
+                <div className="rounded-xl border border-cyber-blue/15 bg-brand-panel/70 p-3 text-xs text-gray-400">
+                  <div className="flex items-center justify-between gap-3">
+                    <span>Your local time</span>
+                    <span className="text-right font-mono text-text-light/80">{unlockTimePreview.local}</span>
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-3">
+                    <span>Blockchain/UTC</span>
+                    <span className="text-right font-mono text-text-light/80">{unlockTimePreview.utc}</span>
+                  </div>
+                  <p className="mt-2 border-t border-cyber-blue/10 pt-2 text-gray-500">
+                    Unlock time is enforced by Sepolia block time. Wallet approval and block production can shift timing by a few seconds or minutes.
+                  </p>
                 </div>
               )}
             </div>
           )}
 
           {paymentEnabled && (
-            <div className="rounded-lg border border-gray-700 bg-gray-900/40 p-3">
-              <label className="mb-1 block text-sm text-gray-300">Required payment</label>
-              <input value={paymentInput} onChange={(event) => setPaymentInput(event.target.value)} placeholder={`0.01 ${nativeSymbol}`} className="w-full rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-white outline-none focus:border-emerald-500" />
+            <div className="rounded-2xl border border-aurora/35 bg-[linear-gradient(180deg,rgba(34,13,55,0.58),rgba(15,8,31,0.72))] p-3">
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                <label className="block text-sm font-semibold text-[#c39cff]">Required payment</label>
+                <span className="rounded-md border border-aurora/30 bg-aurora/20 px-2 py-1 text-xs font-semibold text-[#d9c7ff]">{nativeSymbol}</span>
+              </div>
+              <input value={paymentInput} onChange={(event) => setPaymentInput(event.target.value)} placeholder={`0.01 ${nativeSymbol}`} className="w-full rounded-xl border border-cyber-blue/15 bg-brand-panel px-3 py-2 text-sm text-white outline-none focus:border-cyber-blue" />
+              <p className="mt-2 text-xs text-text-light/45">Receiver pays this amount to unlock; funds are transferred to the sender by the contract.</p>
             </div>
           )}
 
-          <div className="rounded-lg border border-emerald-700/20 bg-emerald-950/10 p-3">
-            <label className="mb-2 block text-sm text-emerald-200">Unlock condition</label>
-            <div className="flex flex-wrap gap-2">
+          <div className="rounded-2xl border border-cyber-blue/25 bg-cyber-blue/5 p-3">
+            <label className="mb-2 block text-sm text-brand-cyan">Unlock condition</label>
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-4">
               {UNLOCK_CONDITIONS.map((cond) => (
                 <button
                   key={cond.value}
                   type="button"
-                  onClick={() => setUnlockCondition(cond.value)}
-                  disabled={cond.value === 0 ? !timeEnabled : cond.value === 1 ? !paymentEnabled : !timeEnabled || !paymentEnabled}
-                  className={`rounded-lg border px-3 py-2 text-xs font-medium transition-colors ${
+                  onClick={() => {
+                    setUnlockCondition(cond.value);
+                    if (cond.value === 3) {
+                      setConditionLogic("OR");
+                      return;
+                    }
+                    setConditionLogic("AND");
+                  }}
+                  disabled={cond.value === 0 ? !timeEnabled : cond.value === 1 ? !paymentEnabled : cond.value === 3 ? (!timeEnabled || !paymentEnabled || !isV52) : !timeEnabled || !paymentEnabled}
+                  className={`rounded-lg border px-3 py-2 text-left text-xs font-medium transition-colors ${
                     unlockCondition === cond.value
-                      ? "border-emerald-400 bg-emerald-500/20 text-emerald-100"
-                      : "border-gray-700 bg-gray-800 text-gray-300 hover:border-emerald-500/50"
-                  } ${cond.value === 0 && !timeEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 1 && !paymentEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 2 && (!timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""}`}
+                      ? "border-sunset bg-gradient-to-r from-cyber-blue/20 to-sunset/20 text-white"
+                      : "border-cyber-blue/15 bg-brand-panel text-text-light/75 hover:border-cyber-blue/50"
+                  } ${cond.value === 0 && !timeEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 1 && !paymentEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 2 && (!timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 3 && (!isV52 || !timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""}`}
                 >
-                  {cond.label}
+                  <span className="block">{cond.label}</span>
+                  <span className="mt-1 block text-[11px] font-normal text-text-light/45">{cond.desc}</span>
                 </button>
               ))}
             </div>
           </div>
+
+          {bothConditionsEnabled && isUnsupportedOrCondition && (
+            <div className="rounded-2xl border border-red-500/25 bg-red-950/30 p-3 text-xs text-red-200">
+              OR is not supported by the active contract version. Switch to V5.2-FHE to use on-chain OR unlocking.
+            </div>
+          )}
 
           <p className="text-xs text-gray-400">Active unlock rule: {conditionSummary}.</p>
         </div>
@@ -459,13 +579,13 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
         <div className="relative">
           {/* Typewriter status message during submission */}
           {isSubmitting && typewriterDisplay && (
-            <div className="mb-2 flex items-center gap-2 rounded-lg border border-emerald-700/30 bg-emerald-950/20 px-3 py-2 font-mono text-xs text-emerald-300">
-              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400" />
+            <div className="mb-2 flex items-center gap-2 rounded-xl border border-cyber-blue/20 bg-cyber-blue/10 px-3 py-2 font-mono text-xs text-brand-cyan">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-sunset" />
               <span className="flex-1">{typewriterDisplay}</span>
-              <span className="animate-pulse text-emerald-400">▊</span>
+              <span className="animate-pulse text-sunset">▊</span>
             </div>
           )}
-          <button type="submit" disabled={!isFormValid || isSubmitting} className="w-full rounded-lg bg-emerald-600 px-4 py-3 text-sm font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50">
+          <button type="submit" disabled={!isFormValid || isSubmitting} className="w-full rounded-xl bg-gradient-to-r from-cyber-blue via-aurora to-sunset px-4 py-3 text-sm font-semibold tracking-[0.18em] text-midnight shadow-glow-orange hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-50">
             {isSubmitting ? "Submitting secure message..." : "Send Secure FHE Message"}
           </button>
         </div>

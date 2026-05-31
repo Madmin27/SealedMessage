@@ -170,6 +170,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [paymentEnabled, setPaymentEnabled] = useState(false);
   const [paymentInputMode, setPaymentInputMode] = useState<"native" | "wei">("native"); // User-friendly input
   const [paymentInputValue, setPaymentInputValue] = useState<string>(""); // Visible value
+  const [conditionLogic, setConditionLogic] = useState<"AND" | "OR">("AND");
 
   const parsedPaymentAmount = useMemo(() => {
     if (!paymentAmount) {
@@ -204,7 +205,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
   const [successToast, setSuccessToast] = useState(false);
   const [userTimezone, setUserTimezone] = useState<string>("UTC");
   const [selectedTimezone, setSelectedTimezone] = useState<string>("Europe/Istanbul");
-  const [isPresetsOpen, setIsPresetsOpen] = useState(false);
+  const [isPresetsOpen, setIsPresetsOpen] = useState(true);
   
   // File attachment state (IPFS - to be used in future)
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
@@ -254,6 +255,23 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     const cleaned = receiverEncryptionKey.replace("0x", "");
     return cleaned.length === 66 && /^[0-9a-fA-F]+$/.test(cleaned);
   }, [receiverEncryptionKey]);
+
+  const bothConditionsEnabled = timeConditionEnabled && paymentEnabled;
+  const isUnsupportedOrCondition = bothConditionsEnabled && conditionLogic === "OR";
+  const conditionSummary = useMemo(() => {
+    if (timeConditionEnabled && paymentEnabled) {
+      return conditionLogic === "AND"
+        ? "Time and payment are both required before the message can be opened."
+        : "Time or payment can open the message once the contract supports OR logic.";
+    }
+    if (timeConditionEnabled) {
+      return "Only the time condition is required before the message can be opened.";
+    }
+    if (paymentEnabled) {
+      return "Only the payment condition is required before the message can be opened.";
+    }
+    return "Select at least one unlock condition.";
+  }, [timeConditionEnabled, paymentEnabled, conditionLogic]);
 
   const computeSafeUnlockTime = (
     chainSeconds: number | null,
@@ -631,7 +649,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     } else {
       const plainText = content.trim();
       if (!plainText) {
-        throw new Error("Message content cannot be empty");
+        throw new Error("Message content or a completed attachment is required");
       }
 
       const encoderInstance = utf8Encoder ?? new TextEncoder();
@@ -964,6 +982,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     const hasCondition = timeConditionEnabled || paymentEnabled;
     
     const paymentValid = !paymentEnabled || hasValidPaymentAmount;
+    const logicValid = !isUnsupportedOrCondition;
 
     valid = isConnected &&
       !!receiver &&
@@ -973,6 +992,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       isReceiverKeyValid &&
       timeValid &&
       paymentValid &&
+      logicValid &&
       hasCondition; // At least one condition required
     
     setIsFormValid(valid);
@@ -989,7 +1009,8 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     selectedTimezone,
     timeConditionEnabled,
     paymentEnabled,
-    hasValidPaymentAmount
+    hasValidPaymentAmount,
+    isUnsupportedOrCondition
   ]);
   
   const generateAttachmentPreview = useCallback((file: File): Promise<string | null> => {
@@ -1552,8 +1573,12 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
       setError("❌ You cannot send a message to yourself. Please enter a different recipient address.");
       return;
     }
-    if (content.trim().length === 0) {
-      setError("Message content cannot be empty.");
+    if (content.trim().length === 0 && ipfsHash.length === 0) {
+      setError("Message content or an uploaded attachment is required.");
+      return;
+    }
+    if (attachedFile && ipfsHash.length === 0) {
+      setError("Attachment upload is not complete yet. Please wait for IPFS upload or retry the file.");
       return;
     }
     if (!isReceiverKeyValid || !receiverEncryptionKey) {
@@ -1564,6 +1589,10 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
     // At least one condition must be selected
     if (!timeConditionEnabled && !paymentEnabled) {
       setError("❌ Please enable at least one unlock condition (Time or Payment).");
+      return;
+    }
+    if (isUnsupportedOrCondition) {
+      setError("❌ OR logic is not supported by the currently deployed SealedMessage contract. Use AND, or deploy a contract version that stores the condition operator.");
       return;
     }
     
@@ -1861,7 +1890,7 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                     Receiver hasn&apos;t registered yet. Using deterministic fallback key derived from their address.
                   </p>
                   <p className="text-xs text-amber-300/80 mt-2">
-                    💡 Message stays fully encrypted with Sealed's fallback key. Ask the receiver to connect once and register their key for stronger forward secrecy.
+                    💡 Message stays fully encrypted with Sealed&apos;s fallback key. Ask the receiver to connect once and register their key for stronger forward secrecy.
                   </p>
                 </div>
               </>
@@ -1943,186 +1972,172 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
         </p>
       </div>
       
-      {/* Condition Type Selection - Tab Buttons */}
-      <div className="flex flex-col">
-        <div className="flex items-center gap-2 mb-3">
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
           <input
             type="checkbox"
             id="timeConditionEnabled"
             checked={timeConditionEnabled}
             onChange={(e) => setTimeConditionEnabled(e.target.checked)}
-            className="h-4 w-4 rounded border-cyber-blue/40 bg-midnight/60 text-green-500 focus:ring-2 focus:ring-green-500/60"
+            className="h-4 w-4 rounded border-cyber-blue/40 bg-midnight/60 text-cyber-blue focus:ring-2 focus:ring-cyber-blue/60"
           />
           <label htmlFor="timeConditionEnabled" className="text-sm font-semibold uppercase tracking-wide text-text-light/80">
             ⏰ Unlock Time (Optional)
           </label>
         </div>
-        
-        {/* Unlock Time Form */}
+
         {timeConditionEnabled && (
-        <div className="rounded-lg border-2 border-neon-green bg-neon-green/10 p-4">
-          <div className="flex flex-col gap-3">
-            {/* Mode Selection */}
-            <div className="flex gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setUnlockMode("preset");
-              setIsPresetsOpen(!isPresetsOpen);
-              setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + presetDuration);
-            }}
-            className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition ${
-              unlockMode === "preset"
-                ? "bg-aurora/20 border-2 border-aurora text-aurora"
-                : "bg-midnight/40 border border-cyber-blue/30 text-text-light/60 hover:text-text-light"
-            }`}
-          >
-            ⚡ Quick Select {unlockMode === "preset" && (isPresetsOpen ? "▼" : "▶")}
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setUnlockMode("custom");
-              setIsPresetsOpen(false); // Close presets when switching to custom
-            }}
-            className={`flex-1 rounded-lg px-4 py-2 text-sm font-medium transition ${
-              unlockMode === "custom"
-                ? "bg-aurora/20 border-2 border-aurora text-aurora"
-                : "bg-midnight/40 border border-cyber-blue/30 text-text-light/60 hover:text-text-light"
-            }`}
-          >
-            📅 Custom Date
-          </button>
-        </div>
-
-        {/* Preset Durations */}
-        {unlockMode === "preset" && isPresetsOpen && (
-          <div className="grid grid-cols-3 gap-2 animate-in slide-in-from-top duration-200">
-            {[
-              { label: "⚡ Now (10s)", value: 10 },
-              { label: "30 seconds", value: 30 },
-              { label: "1 minute", value: 60 },
-              { label: "5 minutes", value: 300 },
-              { label: "15 minutes", value: 900 },
-              { label: "1 hour", value: 3600 },
-              { label: "2 hours", value: 7200 },
-              { label: "6 hours", value: 21600 },
-              { label: "1 day", value: 86400 },
-              { label: "3 days", value: 259200 },
-              { label: "1 week", value: 604800 },
-              { label: "1 month", value: 2592000 }
-            ].map(({ label, value }) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => {
-                  setPresetDuration(value);
-                  setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + value);
-                  setIsPresetsOpen(false); // Close dropdown
-                }}
-                className={`rounded-lg px-3 py-2 text-sm transition ${
-                  presetDuration === value
-                    ? "bg-neon-orange/20 border-2 border-neon-orange text-neon-orange shadow-glow-orange"
-                    : "bg-midnight/40 border border-cyber-blue/30 text-text-light hover:border-cyber-blue/60"
-                }`}
-              >
-                {label}
-              </button>
-            ))}
-          </div>
-        )}
-
-        {/* Custom Date Picker */}
-        {unlockMode === "custom" && (
-          <div className="space-y-3">
-            <input
-              id="unlock"
-              type="datetime-local"
-              value={unlock}
-              onChange={(event: ChangeEvent<HTMLInputElement>) => setUnlock(event.target.value)}
-              className="w-full rounded-lg border border-cyber-blue/40 bg-midnight/60 px-4 py-3 text-text-light outline-none transition focus:border-neon-orange focus:ring-2 focus:ring-neon-orange/60"
-            />
-            
-            {/* Timezone Selector */}}
-            <div className="flex flex-col gap-2">
-              <label htmlFor="timezone" className="text-xs font-medium text-text-light/60">
-                🌐 Timezone
-              </label>
-              <select
-                id="timezone"
-                value={selectedTimezone}
-                onChange={(e) => setSelectedTimezone(e.target.value)}
-                className="rounded-lg border border-slate-700 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-neon-orange focus:ring-2 focus:ring-neon-orange/60"
-              >
-                <optgroup label="🇹🇷 Turkey">
-                  <option value="Europe/Istanbul">Istanbul (UTC+3)</option>
-                </optgroup>
-                <optgroup label="🇪🇺 Europe">
-                  <option value="Europe/London">London (UTC+0)</option>
-                  <option value="Europe/Paris">Paris (UTC+1)</option>
-                  <option value="Europe/Berlin">Berlin (UTC+1)</option>
-                  <option value="Europe/Moscow">Moscow (UTC+3)</option>
-                </optgroup>
-                <optgroup label="🇺🇸 America">
-                  <option value="America/New_York">New York (UTC-5)</option>
-                  <option value="America/Chicago">Chicago (UTC-6)</option>
-                  <option value="America/Denver">Denver (UTC-7)</option>
-                  <option value="America/Los_Angeles">Los Angeles (UTC-8)</option>
-                </optgroup>
-                <optgroup label="🌏 Asya">
-                  <option value="Asia/Dubai">Dubai (UTC+4)</option>
-                  <option value="Asia/Kolkata">Kolkata (UTC+5:30)</option>
-                  <option value="Asia/Singapore">Singapore (UTC+8)</option>
-                  <option value="Asia/Tokyo">Tokyo (UTC+9)</option>
-                  <option value="Asia/Shanghai">Shanghai (UTC+8)</option>
-                </optgroup>
-                <optgroup label="🌍 Other">
-                  <option value="UTC">UTC (Universal Time)</option>
-                  <option value="Australia/Sydney">Sydney (UTC+10)</option>
-                </optgroup>
-              </select>
-              <p className="text-xs text-text-light/50 italic">
-                💡 The date/time you enter will be interpreted in this timezone
-              </p>
-            </div>
-          </div>
-        )}
-
-        {/* Time Display */}
-        {mounted && (
-          <div className="rounded-lg bg-midnight/40 border border-cyber-blue/30 p-3 space-y-2 text-xs">
-            {unlockMode === "custom" && (
-              <div className="flex items-center justify-between">
-                <span className="text-text-light/60">🕒 Selected Timezone:</span>
-                <span className="text-sunset font-mono font-semibold">{unlockTimeDisplay.selected}</span>
+          <div className="rounded-lg border border-cyber-blue bg-cyber-blue/10 p-4">
+            <div className="flex flex-col gap-3">
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUnlockMode("preset");
+                    setIsPresetsOpen(!isPresetsOpen);
+                    setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + presetDuration);
+                  }}
+                  className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                    unlockMode === "preset"
+                      ? "border border-aurora bg-aurora/25 text-[#b57cff]"
+                      : "border border-cyber-blue/30 bg-midnight/40 text-text-light/60 hover:text-text-light"
+                  }`}
+                >
+                  ⚡ Quick Select {unlockMode === "preset" && (isPresetsOpen ? "▼" : "▶")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setUnlockMode("custom");
+                    setIsPresetsOpen(false);
+                  }}
+                  className={`rounded-lg px-4 py-2 text-sm font-medium transition ${
+                    unlockMode === "custom"
+                      ? "border border-cyber-blue bg-cyber-blue/20 text-cyber-blue"
+                      : "border border-cyber-blue/30 bg-midnight/40 text-text-light/60 hover:text-text-light"
+                  }`}
+                >
+                  🗓️ Custom Date
+                </button>
               </div>
-            )}
-            <div className="flex items-center justify-between">
-              <span className="text-text-light/60">🌍 Your Time:</span>
-              <span className="text-slate-200 font-mono">{unlockTimeDisplay.local}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-light/60">🌐 Universal Time (UTC):</span>
-              <span className="text-slate-200 font-mono">{unlockTimeDisplay.utc}</span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-text-light/60">⏱️ Time Remaining:</span>
-              <span className="text-green-400 font-semibold">{unlockTimeDisplay.relative}</span>
-            </div>
-            <div className="pt-2 border-t border-slate-700">
-              <p className="text-text-light/50 italic">
-                ℹ️ Blockchain uses UTC time. The message will unlock at this UTC time regardless of the recipient&apos;s location.
-              </p>
+
+              {unlockMode === "preset" && isPresetsOpen && (
+                <div className="grid grid-cols-2 gap-2 animate-in slide-in-from-top duration-200 sm:grid-cols-3">
+                  {[
+                    { label: "⚡ Now (10s)", value: 10 },
+                    { label: "30 seconds", value: 30 },
+                    { label: "1 minute", value: 60 },
+                    { label: "5 minutes", value: 300 },
+                    { label: "15 minutes", value: 900 },
+                    { label: "1 hour", value: 3600 },
+                    { label: "2 hours", value: 7200 },
+                    { label: "6 hours", value: 21600 },
+                    { label: "1 day", value: 86400 },
+                    { label: "3 days", value: 259200 },
+                    { label: "1 week", value: 604800 },
+                    { label: "1 month", value: 2592000 }
+                  ].map(({ label, value }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => {
+                        setPresetDuration(value);
+                        setPlannedUnlockTimestamp(Math.floor(Date.now() / 1000) + value);
+                      }}
+                      className={`rounded-lg px-3 py-2 text-sm transition ${
+                        presetDuration === value
+                          ? "border border-sunset bg-sunset/15 text-sunset shadow-glow-orange"
+                          : "border border-cyber-blue/30 bg-midnight/40 text-text-light hover:border-cyber-blue/60"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {unlockMode === "custom" && (
+                <div className="space-y-3">
+                  <input
+                    id="unlock"
+                    type="datetime-local"
+                    value={unlock}
+                    onChange={(event: ChangeEvent<HTMLInputElement>) => setUnlock(event.target.value)}
+                    className="w-full rounded-lg border border-cyber-blue/40 bg-midnight/60 px-4 py-3 text-text-light outline-none transition focus:border-neon-orange focus:ring-2 focus:ring-neon-orange/60"
+                  />
+
+                  <div className="flex flex-col gap-2">
+                    <label htmlFor="timezone" className="text-xs font-medium text-text-light/60">
+                      🌐 Timezone
+                    </label>
+                    <select
+                      id="timezone"
+                      value={selectedTimezone}
+                      onChange={(e) => setSelectedTimezone(e.target.value)}
+                      className="rounded-lg border border-slate-700 bg-slate-950/70 px-4 py-2 text-sm text-slate-100 outline-none transition focus:border-neon-orange focus:ring-2 focus:ring-neon-orange/60"
+                    >
+                      <optgroup label="🇹🇷 Turkey">
+                        <option value="Europe/Istanbul">Istanbul (UTC+3)</option>
+                      </optgroup>
+                      <optgroup label="🇪🇺 Europe">
+                        <option value="Europe/London">London (UTC+0)</option>
+                        <option value="Europe/Paris">Paris (UTC+1)</option>
+                        <option value="Europe/Berlin">Berlin (UTC+1)</option>
+                        <option value="Europe/Moscow">Moscow (UTC+3)</option>
+                      </optgroup>
+                      <optgroup label="🇺🇸 America">
+                        <option value="America/New_York">New York (UTC-5)</option>
+                        <option value="America/Chicago">Chicago (UTC-6)</option>
+                        <option value="America/Denver">Denver (UTC-7)</option>
+                        <option value="America/Los_Angeles">Los Angeles (UTC-8)</option>
+                      </optgroup>
+                      <optgroup label="🌏 Asya">
+                        <option value="Asia/Dubai">Dubai (UTC+4)</option>
+                        <option value="Asia/Kolkata">Kolkata (UTC+5:30)</option>
+                        <option value="Asia/Singapore">Singapore (UTC+8)</option>
+                        <option value="Asia/Tokyo">Tokyo (UTC+9)</option>
+                        <option value="Asia/Shanghai">Shanghai (UTC+8)</option>
+                      </optgroup>
+                      <optgroup label="🌍 Other">
+                        <option value="UTC">UTC (Universal Time)</option>
+                        <option value="Australia/Sydney">Sydney (UTC+10)</option>
+                      </optgroup>
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {mounted && (
+                <div className="rounded-lg border border-cyber-blue/30 bg-midnight/40 p-3 space-y-2 text-xs">
+                  {unlockMode === "custom" && (
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-text-light/60">🕒 Selected Timezone:</span>
+                      <span className="text-sunset font-mono font-semibold text-right">{unlockTimeDisplay.selected}</span>
+                    </div>
+                  )}
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-text-light/60">🌍 Your Time:</span>
+                    <span className="text-slate-200 font-mono text-right">{unlockTimeDisplay.local}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-text-light/60">🌐 Universal Time (UTC):</span>
+                    <span className="text-slate-200 font-mono text-right">{unlockTimeDisplay.utc}</span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="text-text-light/60">⏱️ Time Remaining:</span>
+                    <span className="text-green-400 font-semibold text-right">{unlockTimeDisplay.relative}</span>
+                  </div>
+                  <div className="pt-2 border-t border-slate-700">
+                    <p className="text-text-light/50 italic">
+                      ℹ️ Blockchain uses UTC time. The message will unlock at this UTC time regardless of the recipient&apos;s location.
+                    </p>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
         )}
-          </div>
-        </div>
-        )}
-      </div>
-      
-      {/* 💰 Payment Condition (Optional) */}
-      <div className="flex flex-col gap-2">
+
         <div className="flex items-center gap-2">
           <input
             type="checkbox"
@@ -2135,21 +2150,19 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
             💰 Require Payment to Unlock (Optional)
           </label>
         </div>
-        
+
         {paymentEnabled && (
-          <div className="rounded-lg border-2 border-purple-500/40 bg-purple-900/10 p-4 space-y-3 animate-in slide-in-from-top duration-200">
+          <div className="rounded-lg border border-purple-500/60 bg-purple-900/10 p-4 space-y-3 animate-in slide-in-from-top duration-200">
             <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
+              <div className="flex items-center justify-between gap-3">
                 <label htmlFor="paymentAmount" className="text-xs font-medium text-purple-300">
                   💵 Required Payment Amount
                 </label>
-                {/* Native/Wei Toggle */}
                 <div className="flex gap-1 rounded-lg bg-midnight/60 p-1">
                   <button
                     type="button"
                     onClick={() => {
                       setPaymentInputMode("native");
-                      // Convert current Wei/base units to native units
                       if (paymentAmount && paymentAmount !== "0") {
                         try {
                           const nativeValue = formatUnits(parsedPaymentAmount, nativeDecimals);
@@ -2173,7 +2186,6 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                     type="button"
                     onClick={() => {
                       setPaymentInputMode("wei");
-                      // Show current Wei value
                       setPaymentInputValue(paymentAmount || "0");
                     }}
                     className={`px-3 py-1 text-xs font-medium rounded transition ${
@@ -2186,20 +2198,18 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                   </button>
                 </div>
               </div>
-              
+
               <input
                 id="paymentAmount"
                 type="text"
                 value={paymentInputValue}
                 onChange={(e) => {
                   const value = e.target.value;
-                  
+
                   if (paymentInputMode === "native") {
-                    // Allow decimal numbers for the native unit
                     if (value === '' || /^\d*\.?\d*$/.test(value)) {
                       setPaymentInputValue(value);
-                      
-                      // Convert to base units
+
                       if (value && value !== '.') {
                         try {
                           const weiValue = parseUnits(value, nativeDecimals).toString();
@@ -2212,38 +2222,33 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
                         setPaymentAmount('0');
                       }
                     }
-                  } else {
-                    // Wei mode: only integers
-                    if (value === '' || /^\d+$/.test(value)) {
-                      setPaymentInputValue(value);
-                      setPaymentAmount(value || '0');
-                    }
+                  } else if (value === '' || /^\d+$/.test(value)) {
+                    setPaymentInputValue(value);
+                    setPaymentAmount(value || '0');
                   }
                 }}
                 placeholder={paymentInputMode === "native" ? "0.001" : weiPlaceholder}
                 className="rounded-lg border border-purple-500/40 bg-midnight/60 px-4 py-3 font-mono text-sm text-text-light outline-none transition focus:border-purple-500 focus:ring-2 focus:ring-purple-500/60"
               />
-              
-              {/* Helper Text */}
+
               <p className="text-xs text-purple-300/60">
-                {paymentInputMode === "native" 
+                {paymentInputMode === "native"
                   ? `💡 Example: 0.001 ${nativeSymbol} (decimals allowed)`
                   : `💡 Example: ${weiPlaceholder} Wei (1 ${nativeSymbol} = 10^${nativeDecimals} Wei)`
                 }
               </p>
-              
-              {/* Preview Box */}
+
               {hasValidPaymentAmount && (
                 <div className="rounded-lg bg-purple-500/10 border border-purple-500/30 p-3 space-y-1">
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between gap-3 text-xs">
                     <span className="text-purple-300/80">{nativeSymbol}:</span>
-                    <span className="font-mono text-purple-200">
+                    <span className="font-mono text-purple-200 text-right">
                       {formatUnits(parsedPaymentAmount, nativeDecimals)} {nativeSymbol}
                     </span>
                   </div>
-                  <div className="flex justify-between text-xs">
+                  <div className="flex justify-between gap-3 text-xs">
                     <span className="text-purple-300/80">Wei:</span>
-                    <span className="font-mono text-purple-200 text-[10px]">
+                    <span className="font-mono text-purple-200 text-[10px] text-right break-all">
                       {parsedPaymentAmount.toString()}
                     </span>
                   </div>
@@ -2251,16 +2256,55 @@ export function MessageForm({ onSubmitted }: MessageFormProps) {
               )}
             </div>
             <p className="text-xs text-purple-300/80 italic">
-              🔒 Receiver will pay this amount to read the message. Payment automatically transferred to you (sender).
+              🔐 Receiver pays this amount before reading. Payment is automatically transferred to you as sender.
             </p>
           </div>
         )}
-        
-        {!paymentEnabled && (
-          <p className="text-xs text-text-light/60">
-            💡 Optional: You can add payment condition for reading the message
-          </p>
+
+        {bothConditionsEnabled && (
+          <div className="rounded-lg border border-sunset/45 bg-sunset/10 p-3">
+            <p className="text-xs font-semibold uppercase tracking-wide text-sunset">Condition Logic</p>
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => setConditionLogic("AND")}
+                className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                  conditionLogic === "AND"
+                    ? "border-sunset bg-sunset/20 text-sunset"
+                    : "border-sunset/30 bg-midnight/40 text-text-light/70 hover:text-text-light"
+                }`}
+              >
+                AND
+              </button>
+              <button
+                type="button"
+                onClick={() => setConditionLogic("OR")}
+                className={`rounded-lg border px-3 py-2 text-sm font-semibold transition ${
+                  conditionLogic === "OR"
+                    ? "border-red-400 bg-red-500/15 text-red-300"
+                    : "border-sunset/30 bg-midnight/40 text-text-light/70 hover:text-text-light"
+                }`}
+              >
+                OR
+              </button>
+            </div>
+            <p className="mt-2 text-xs text-text-light/70">
+              {conditionSummary}
+            </p>
+            {isUnsupportedOrCondition && (
+              <p className="mt-2 text-xs font-medium text-red-300">
+                OR needs a contract version that stores the condition operator. The current Sepolia contract enforces AND for time + payment.
+              </p>
+            )}
+          </div>
         )}
+
+        <div className="rounded-lg border border-cyber-blue/25 bg-midnight/45 p-3 text-xs leading-relaxed text-text-light/70">
+          <p className="font-medium text-cyber-blue">🔐 Unlock rule: {conditionSummary}</p>
+          <p className="mt-1">
+            Until the selected condition rule is satisfied, the encrypted message cannot be opened by the receiver or by third parties using other software on the internet.
+          </p>
+        </div>
       </div>
       
       {/* AES-256-GCM encryption status */}

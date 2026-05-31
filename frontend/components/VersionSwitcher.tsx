@@ -36,10 +36,10 @@ export function VersionSwitcher() {
       <button
         type="button"
         onClick={() => setIsOpen(!isOpen)}
-        className="inline-flex items-center gap-2 rounded-lg border border-gray-600 bg-gray-800 px-4 py-2 text-sm font-medium text-gray-200 hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        className="inline-flex items-center gap-2 rounded-2xl border border-cyber-blue/20 bg-brand-panel/80 px-4 py-2 text-sm font-medium text-text-light hover:border-sunset/50 hover:bg-brand-panel focus:outline-none focus:ring-2 focus:ring-cyber-blue"
       >
         <span className="flex items-center gap-2">
-          {(currentVersion === "v4-fhe-legacy" || currentVersion === "v5-fhe" || currentVersion === "v5.1-fhe") && <span className="text-xs">🔐</span>}
+          {(currentVersion === "v4-fhe-legacy" || currentVersion === "v5-fhe" || currentVersion === "v5.1-fhe" || currentVersion === "v5.2-fhe") && <span className="text-xs">🔐</span>}
           {currentVersion === "v3" && <span className="text-xs">📜</span>}
           {currentLabel}
         </span>
@@ -58,7 +58,7 @@ export function VersionSwitcher() {
           {/* Background click-close */}
           <div className="fixed inset-0 z-10" onClick={() => setIsOpen(false)} />
 
-          <div className="absolute right-0 z-20 mt-2 w-72 origin-top-right rounded-lg border border-gray-600 bg-gray-800 shadow-xl">
+          <div className="absolute right-0 z-20 mt-2 w-72 origin-top-right rounded-2xl border border-cyber-blue/25 bg-brand-panel shadow-glow-blue-strong">
             <div className="p-1">
               {availableVersions.map((version) => {
                 const isActive = currentVersion === version.key;
@@ -70,8 +70,8 @@ export function VersionSwitcher() {
                     onClick={() => handleSelect(version.key)}
                     className={`flex w-full items-start gap-3 rounded-md px-3 py-3 text-left text-sm transition-colors ${
                       isActive
-                        ? "bg-blue-600/20 text-blue-300 cursor-default"
-                        : "text-gray-300 hover:bg-gray-700 hover:text-white"
+                        ? "bg-cyber-blue/15 text-brand-cyan cursor-default"
+                        : "text-text-light/80 hover:bg-midnight hover:text-white"
                     }`}
                   >
                     <span className="mt-0.5 text-base">
@@ -79,12 +79,12 @@ export function VersionSwitcher() {
                     </span>
                     <div className="flex-1">
                       <div className="font-medium">{version.label}</div>
-                      <div className="mt-0.5 text-xs text-gray-400">
+                      <div className="mt-0.5 text-xs text-text-light/45">
                         {version.description}
                       </div>
                     </div>
                     {isActive && (
-                      <span className="text-blue-400 text-xs mt-1">✓</span>
+                      <span className="mt-1 text-xs text-brand-cyan">✓</span>
                     )}
                   </button>
                 );

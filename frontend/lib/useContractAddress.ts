@@ -61,7 +61,7 @@ export function useContractVersion(): string | undefined {
  */
 export function useIsFHE(): boolean {
   const version = useContractVersion();
-  return version === "v4-fhe-legacy" || version === "v5-fhe" || version === "v5.1-fhe";
+  return version === "v4-fhe-legacy" || version === "v5-fhe" || version === "v5.1-fhe" || version === "v5.2-fhe";
 }
 
 /**
@@ -69,7 +69,7 @@ export function useIsFHE(): boolean {
  */
 export function useContractAbi(): typeof sealedMessageFheSecureAbi | typeof sealedMessageFheV51Abi {
   const version = useContractVersion();
-  if (version === "v5.1-fhe") {
+  if (version === "v5.1-fhe" || version === "v5.2-fhe") {
     return sealedMessageFheV51Abi;
   }
   return sealedMessageFheSecureAbi;

@@ -41,8 +41,6 @@ export function generateFallbackKeyPair(receiverAddress: string): {
   const privateKey = hexToBytes(privateKeyReduced.toString(16).padStart(64, "0"));
   const publicKey = secp256k1.getPublicKey(privateKey, true);
   
-  console.log("🔑 Generated fallback keypair for", receiverAddress);
-  
   return { privateKey, publicKey };
 }
 
