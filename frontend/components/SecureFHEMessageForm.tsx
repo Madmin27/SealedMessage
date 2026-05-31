@@ -7,6 +7,7 @@ import { useAccount, useNetwork } from "../lib/wagmiCompat";
 import { useContractAddress } from "../lib/useContractAddress";
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
+import { sealedMessageFheV52Abi } from "../lib/sealedMessageFheV52Abi";
 import { pinFileToIpfs } from "../lib/ipfsClient";
 import { combineMessageKey, computeKeccakFromString, encryptBytesEnvelope, encryptJsonEnvelope, generateMessageKey, splitMessageKey } from "../lib/securePayload";
 import { encryptKeyPartsForContract } from "../lib/fheSecure";
@@ -345,7 +346,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
       if (signerAddress.toLowerCase() !== userAddress.toLowerCase()) {
         throw new Error("Wallet address changed while preparing the transaction. Please review the form with the active MetaMask address and try again.");
       }
-      const formAbi = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+      const formAbi = versionKey === "v5.2-fhe" ? sealedMessageFheV52Abi : versionKey === "v5.1-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
       const contract = new ethers.Contract(contractAddress, formAbi, signer);
       const txUnlockTimestamp = resolveUnlockTimestamp();
 
@@ -452,17 +453,44 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
               <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Unlock conditions</p>
-              <p className="mt-1 text-xs text-text-light/45">Use time, payment, or both. V5.2 supports real OR on-chain; V5.1 stays AND-only.</p>
             </div>
-            <div className="flex flex-wrap items-center gap-3">
-            <label className="flex items-center gap-2 text-sm text-gray-300">
-              <input type="checkbox" checked={timeEnabled} onChange={(event) => setTimeEnabled(event.target.checked)} />
-              Time condition
-            </label>
-            <label className="flex items-center gap-2 text-sm text-gray-300">
-              <input type="checkbox" checked={paymentEnabled} onChange={(event) => setPaymentEnabled(event.target.checked)} />
-              Payment condition
-            </label>
+            <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:min-w-[360px] sm:grid-cols-2">
+              <label
+                className={`flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                  timeEnabled
+                    ? "border-cyber-blue bg-cyber-blue/15 text-brand-cyan shadow-glow-blue"
+                    : "border-cyber-blue/20 bg-brand-panel/70 text-text-light/65 hover:border-cyber-blue/50 hover:text-white"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={timeEnabled}
+                  onChange={(event) => setTimeEnabled(event.target.checked)}
+                  className="h-4 w-4 accent-cyber-blue"
+                />
+                <span className="flex flex-col">
+                  <span>Time condition</span>
+                  <span className="text-[11px] font-normal text-text-light/45">Unlock after time</span>
+                </span>
+              </label>
+              <label
+                className={`flex min-h-12 cursor-pointer items-center gap-3 rounded-xl border px-3 py-2 text-sm font-semibold transition ${
+                  paymentEnabled
+                    ? "border-sunset bg-sunset/15 text-brand-orange-soft shadow-glow-orange"
+                    : "border-cyber-blue/20 bg-brand-panel/70 text-text-light/65 hover:border-sunset/50 hover:text-white"
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={paymentEnabled}
+                  onChange={(event) => setPaymentEnabled(event.target.checked)}
+                  className="h-4 w-4 accent-sunset"
+                />
+                <span className="flex flex-col">
+                  <span>Payment condition</span>
+                  <span className="text-[11px] font-normal text-text-light/45">Require payment</span>
+                </span>
+              </label>
             </div>
           </div>
 

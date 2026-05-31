@@ -5,6 +5,8 @@ import { useAccount, usePublicClient } from "../lib/wagmiCompat";
 import { useContractAddress, useContractVersion } from "../lib/useContractAddress";
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
+import { sealedMessageFheV52Abi } from "../lib/sealedMessageFheV52Abi";
+import { PendingWithdrawalsPanel } from "./PendingWithdrawalsPanel";
 import { SecureFHEMessageCard } from "./SecureFHEMessageCard";
 
 type Props = {
@@ -94,8 +96,9 @@ export function SecureFHEMessageList({ refreshKey }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const isV51 = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe";
-  const abi = isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+  const isV52 = versionKey === "v5.2-fhe";
+  const isV51 = versionKey === "v5.1-fhe";
+  const abi = isV52 ? sealedMessageFheV52Abi : isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
 
   const fetchMessages = useCallback(async () => {
     if (!client || !contractAddress || !userAddress) {
@@ -140,23 +143,28 @@ export function SecureFHEMessageList({ refreshKey }: Props) {
     return <div className="mx-auto w-full max-w-2xl rounded-xl border border-gray-700 bg-gray-900/60 p-6 text-center text-sm text-gray-400">Connect your wallet to inspect secure FHE messages.</div>;
   }
 
-  if (loading && items.length === 0) {
-    return <div className="mx-auto w-full max-w-2xl rounded-xl border border-gray-700 bg-gray-900/60 p-6 text-center text-sm text-gray-400">Loading secure FHE messages...</div>;
-  }
+  const content = (() => {
+    if (loading && items.length === 0) {
+      return <div className="rounded-xl border border-gray-700 bg-gray-900/60 p-6 text-center text-sm text-gray-400">Loading secure FHE messages...</div>;
+    }
 
-  if (error) {
-    return <div className="mx-auto w-full max-w-2xl rounded-xl border border-red-500/30 bg-red-950/20 p-6 text-sm text-red-200">{error}</div>;
-  }
+    if (error) {
+      return <div className="rounded-xl border border-red-500/30 bg-red-950/20 p-6 text-sm text-red-200">{error}</div>;
+    }
 
-  if (items.length === 0) {
-    return <div className="mx-auto w-full max-w-2xl rounded-xl border border-gray-700 bg-gray-900/60 p-6 text-center text-sm text-gray-400">No secure FHE messages yet.</div>;
-  }
+    if (items.length === 0) {
+      return <div className="rounded-xl border border-gray-700 bg-gray-900/60 p-6 text-center text-sm text-gray-400">No secure FHE messages yet.</div>;
+    }
+
+    return items.map((item) => (
+      <SecureFHEMessageCard key={item.id.toString()} id={item.id} summary={item.summary} access={item.access} onChanged={fetchMessages} />
+    ));
+  })();
 
   return (
     <div className="mx-auto w-full max-w-2xl space-y-3">
-      {items.map((item) => (
-        <SecureFHEMessageCard key={item.id.toString()} id={item.id} summary={item.summary} access={item.access} onChanged={fetchMessages} />
-      ))}
+      <PendingWithdrawalsPanel onWithdrawSuccess={fetchMessages} />
+      {content}
     </div>
   );
 }

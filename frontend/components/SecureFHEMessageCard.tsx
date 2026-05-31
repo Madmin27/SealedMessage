@@ -9,6 +9,7 @@ import { useAccount } from "../lib/wagmiCompat";
 import { useContractAddress, useContractVersion } from "../lib/useContractAddress";
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
+import { sealedMessageFheV52Abi } from "../lib/sealedMessageFheV52Abi";
 import { combineMessageKey, decryptBytesEnvelope, decryptJsonEnvelope, type EncryptedEnvelope } from "../lib/securePayload";
 import { decryptKeyPartsForUser } from "../lib/fheSecure";
 import { getFileTypeLabel, formatSizeShort } from "../lib/preview";
@@ -92,9 +93,10 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const { address: userAddress } = useAccount();
   const contractAddress = useContractAddress();
   const versionKey = useContractVersion();
-  const isV51 = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe";
-  const abi = isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
-  const versionBadge = versionKey === "v5.2-fhe" ? "V5.2-FHE" : isV51 ? "V5.1-FHE" : "V5-FHE";
+  const isV52 = versionKey === "v5.2-fhe";
+  const isV51 = versionKey === "v5.1-fhe";
+  const abi = isV52 ? sealedMessageFheV52Abi : isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+  const versionBadge = isV52 ? "V5.2-FHE" : isV51 ? "V5.1-FHE" : "V5-FHE";
   const [isWorking, setIsWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);
@@ -201,13 +203,14 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const canUnlock = !access.isUnlocked && !access.isRevoked && access.isReadyToUnlock;
   const canDecrypt = isReceiver && access.isUnlocked && !access.isRevoked;
   const alreadyDecrypted = content !== null;
+  const paymentReceivedForSender = isSender && summary.hasPaymentCondition && access.isPaymentMet;
   const logicLabel = isV51
     ? (summary.conditionMode === 0 ? "Time"
       : summary.conditionMode === 1 ? "Payment"
       : summary.conditionMode === 2 ? "Time + Payment"
       : "Time OR Payment")
     : summary.hasTimeCondition && summary.hasPaymentCondition
-      ? (summary.conditionMode === 1 ? "Time OR payment" : "Time AND payment")
+      ? (summary.conditionMode === 3 ? "Time OR payment" : "Time AND payment")
       : summary.hasTimeCondition
         ? "Time"
         : "Payment";
@@ -468,6 +471,11 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
         <div>Unlock logic: {logicLabel}</div>
         {summary.hasPaymentCondition && (
           <div>Payment: {formatEther(effectivePaidAmount)} / {formatEther(effectiveRequiredPayment)} ETH</div>
+        )}
+        {paymentReceivedForSender && (
+          <div className="mt-2 rounded-xl border border-emerald-400/25 bg-emerald-400/10 px-3 py-2 text-xs text-emerald-200">
+            Payment received. Check pending earnings above.
+          </div>
         )}
         {/* Show pending conditions for locked messages */}
         {!access.isUnlocked && !access.isRevoked && (

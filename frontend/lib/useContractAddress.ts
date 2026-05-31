@@ -6,6 +6,7 @@ import { useVersioning } from "../components/VersionProvider";
 import { getDeployment } from "./deployments";
 import { sealedMessageFheSecureAbi } from "./sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "./sealedMessageFheV51Abi";
+import { sealedMessageFheV52Abi } from "./sealedMessageFheV52Abi";
 
 /**
  * Hook to get the active SealedMessage contract address for the current network.
@@ -67,9 +68,12 @@ export function useIsFHE(): boolean {
 /**
  * Returns the correct ABI based on the selected contract version.
  */
-export function useContractAbi(): typeof sealedMessageFheSecureAbi | typeof sealedMessageFheV51Abi {
+export function useContractAbi(): typeof sealedMessageFheSecureAbi | typeof sealedMessageFheV51Abi | typeof sealedMessageFheV52Abi {
   const version = useContractVersion();
-  if (version === "v5.1-fhe" || version === "v5.2-fhe") {
+  if (version === "v5.2-fhe") {
+    return sealedMessageFheV52Abi;
+  }
+  if (version === "v5.1-fhe") {
     return sealedMessageFheV51Abi;
   }
   return sealedMessageFheSecureAbi;
