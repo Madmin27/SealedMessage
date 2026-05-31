@@ -16,6 +16,7 @@ import {
   generateThumbnailBlob,
   getPreviewType,
 } from "../lib/preview";
+import { UnlockConditionsInfo } from "./UnlockConditionsInfo";
 import type { PublicPreviewData } from "../lib/preview";
 
 type Props = {
@@ -452,7 +453,10 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
         <div className="space-y-4 rounded-2xl border border-cyber-blue/25 bg-midnight/55 p-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div>
-              <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Unlock conditions</p>
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-xs font-semibold uppercase tracking-[0.18em] text-cyber-blue">Unlock conditions</p>
+                <UnlockConditionsInfo />
+              </div>
             </div>
             <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:min-w-[360px] sm:grid-cols-2">
               <label

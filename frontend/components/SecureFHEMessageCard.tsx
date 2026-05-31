@@ -579,7 +579,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
                 Close
               </button>
             )}
-            {isSender && !access.isUnlocked && !access.isRevoked && (
+            {isSender && !paymentReceivedForSender && !access.isUnlocked && !access.isRevoked && (
               <button
                 disabled={isWorking}
                 onClick={() => callContract("revokeMessage")}

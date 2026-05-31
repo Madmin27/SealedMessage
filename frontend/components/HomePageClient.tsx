@@ -105,6 +105,18 @@ export function HomePageClient() {
                   <p className="mt-2 text-lg font-semibold text-[#c39cff]">{isSecureFHE ? "FHE Secure" : isLegacyFHE ? "Legacy FHE" : "Timed Release"}</p>
                 </div>
               </div>
+              {isSecureFHE && (
+                <div className="mt-4 rounded-2xl border border-cyber-blue/15 bg-brand-panel/70 p-4 text-sm text-text-light/80">
+                  <h2 className="text-lg font-semibold text-brand-cyan">🛡️ How Secure FHE Works</h2>
+                  <ol className="mt-3 list-decimal space-y-1.5 pl-4">
+                    <li>Payload and metadata are AES-256-GCM encrypted locally.</li>
+                    <li>Only encrypted envelopes are pinned to IPFS.</li>
+                    <li>Zama FHE stores the AES key parts and releases receiver access only after conditions pass.</li>
+                    <li>The receiver decrypts the key with userDecrypt and opens the payload locally.</li>
+                  </ol>
+                  <p className="mt-3 text-xs text-brand-cyan/70">No public decrypt path. No plaintext metadata path.</p>
+                </div>
+              )}
             </div>
 
             <div className="rounded-[30px] border border-cyber-blue/20 bg-[linear-gradient(180deg,rgba(10,16,39,0.88),rgba(8,12,28,0.94))] p-5 shadow-glow-blue">
@@ -157,18 +169,8 @@ export function HomePageClient() {
       </div>
 
       {isSecureFHE ? (
-        <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr] xl:grid-cols-[1fr_1fr]">
+        <div className="mx-auto w-full max-w-2xl">
           <SecureFHEMessageForm key={`secure-form-${walletScopeKey}`} onSubmitted={handleMessageSubmitted} versionKey={selectedVersion} />
-          <div className="rounded-[24px] border border-cyber-blue/20 bg-brand-panel/75 p-6 text-sm text-text-light/80 shadow-glow-blue">
-            <h2 className="text-lg font-semibold text-brand-cyan">🛡️ How Secure FHE Works</h2>
-            <ol className="mt-4 list-decimal space-y-2 pl-4">
-              <li>Payload and metadata are AES-256-GCM encrypted locally.</li>
-              <li>Only encrypted envelopes are pinned to IPFS.</li>
-              <li>Zama FHE stores the AES key parts and releases receiver access only after conditions pass.</li>
-              <li>The receiver decrypts the key with userDecrypt and opens the payload locally.</li>
-            </ol>
-            <p className="mt-4 text-xs text-brand-cyan/70">No public decrypt path. No plaintext metadata path.</p>
-          </div>
         </div>
       ) : isLegacyFHE ? (
         <div className="grid gap-6 lg:grid-cols-[1.1fr_1fr] xl:grid-cols-[1fr_1fr]">
