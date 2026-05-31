@@ -8,6 +8,7 @@ import { useContractAddress } from "../lib/useContractAddress";
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
 import { sealedMessageFheV52Abi } from "../lib/sealedMessageFheV52Abi";
+import { sealedMessageFheV521Abi } from "../lib/sealedMessageFheV521Abi";
 import { pinFileToIpfs } from "../lib/ipfsClient";
 import { combineMessageKey, computeKeccakFromString, encryptBytesEnvelope, encryptJsonEnvelope, generateMessageKey, splitMessageKey } from "../lib/securePayload";
 import { encryptKeyPartsForContract } from "../lib/fheSecure";
@@ -67,7 +68,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
   const { chain } = useNetwork();
   const contractAddress = useContractAddress();
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const isV52 = versionKey === "v5.2-fhe";
+  const isV52Family = versionKey === "v5.2-fhe" || versionKey === "v5.2.1-fhe";
   const nativeDecimals = chain?.nativeCurrency?.decimals ?? 18;
   const nativeSymbol = chain?.nativeCurrency?.symbol ?? "ETH";
 
@@ -126,7 +127,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
   const unlockTimestamp = useMemo(() => resolveUnlockTimestamp(), [resolveUnlockTimestamp]);
 
   const bothConditionsEnabled = timeEnabled && paymentEnabled;
-  const isUnsupportedOrCondition = bothConditionsEnabled && conditionLogic === "OR" && !isV52;
+  const isUnsupportedOrCondition = bothConditionsEnabled && conditionLogic === "OR" && !isV52Family;
   const unlockTimePreview = useMemo(() => {
     if (!timeEnabled || unlockTimestamp <= 0) return null;
     const date = new Date(unlockTimestamp * 1000);
@@ -167,7 +168,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
 
   useEffect(() => {
     if (timeEnabled && paymentEnabled) {
-      setUnlockCondition(conditionLogic === "OR" && isV52 ? 3 : 2);
+      setUnlockCondition(conditionLogic === "OR" && isV52Family ? 3 : 2);
       return;
     }
     if (timeEnabled) {
@@ -179,7 +180,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
       setUnlockCondition(1);
       setConditionLogic("AND");
     }
-  }, [conditionLogic, isV52, paymentEnabled, timeEnabled]);
+  }, [conditionLogic, isV52Family, paymentEnabled, timeEnabled]);
 
   const handleFileChange = useCallback((event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -218,7 +219,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
     event.preventDefault();
     if (!isFormValid || !contractAddress || !userAddress || isSubmitting) return;
     if (isUnsupportedOrCondition) {
-      setError("OR logic is only supported by V5.2-FHE. Select the V5.2 deployment or switch back to AND.");
+      setError("OR logic is only supported by V5.2-FHE and newer. Select a V5.2+ deployment or switch back to AND.");
       return;
     }
 
@@ -347,7 +348,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
       if (signerAddress.toLowerCase() !== userAddress.toLowerCase()) {
         throw new Error("Wallet address changed while preparing the transaction. Please review the form with the active MetaMask address and try again.");
       }
-      const formAbi = versionKey === "v5.2-fhe" ? sealedMessageFheV52Abi : versionKey === "v5.1-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+      const formAbi = versionKey === "v5.2.1-fhe" ? sealedMessageFheV521Abi : versionKey === "v5.2-fhe" ? sealedMessageFheV52Abi : versionKey === "v5.1-fhe" ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
       const contract = new ethers.Contract(contractAddress, formAbi, signer);
       const txUnlockTimestamp = resolveUnlockTimestamp();
 
@@ -397,7 +398,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
           <h2 className="flex items-center gap-2 text-xl font-bold text-white">
             <span>🛡️</span>
             Secure FHE Message
-            <span className="rounded-full border border-cyber-blue/25 bg-cyber-blue/10 px-2 py-0.5 text-xs text-brand-cyan">{versionKey === "v5.2-fhe" ? "V5.2-FHE" : versionKey === "v5.1-fhe" ? "V5.1-FHE" : "V5-FHE"}</span>
+            <span className="rounded-full border border-cyber-blue/25 bg-cyber-blue/10 px-2 py-0.5 text-xs text-brand-cyan">{versionKey === "v5.2.1-fhe" ? "V5.2.1-FHE" : versionKey === "v5.2-fhe" ? "V5.2-FHE" : versionKey === "v5.1-fhe" ? "V5.1-FHE" : "V5-FHE"}</span>
           </h2>
           <p className="mt-1 text-xs text-text-light/50">
             Active wallet: <span className="font-mono text-brand-cyan">{userAddress ? `${userAddress.slice(0, 6)}...${userAddress.slice(-4)}` : "Not connected"}</span>
@@ -585,12 +586,12 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
                     }
                     setConditionLogic("AND");
                   }}
-                  disabled={cond.value === 0 ? !timeEnabled : cond.value === 1 ? !paymentEnabled : cond.value === 3 ? (!timeEnabled || !paymentEnabled || !isV52) : !timeEnabled || !paymentEnabled}
+                  disabled={cond.value === 0 ? !timeEnabled : cond.value === 1 ? !paymentEnabled : cond.value === 3 ? (!timeEnabled || !paymentEnabled || !isV52Family) : !timeEnabled || !paymentEnabled}
                   className={`rounded-lg border px-3 py-2 text-left text-xs font-medium transition-colors ${
                     unlockCondition === cond.value
                       ? "border-sunset bg-gradient-to-r from-cyber-blue/20 to-sunset/20 text-white"
                       : "border-cyber-blue/15 bg-brand-panel text-text-light/75 hover:border-cyber-blue/50"
-                  } ${cond.value === 0 && !timeEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 1 && !paymentEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 2 && (!timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 3 && (!isV52 || !timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""}`}
+                  } ${cond.value === 0 && !timeEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 1 && !paymentEnabled ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 2 && (!timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""} ${cond.value === 3 && (!isV52Family || !timeEnabled || !paymentEnabled) ? "opacity-30 cursor-not-allowed" : ""}`}
                 >
                   <span className="block">{cond.label}</span>
                   <span className="mt-1 block text-[11px] font-normal text-text-light/45">{cond.desc}</span>
@@ -601,7 +602,7 @@ export function SecureFHEMessageForm({ onSubmitted, versionKey }: Props) {
 
           {bothConditionsEnabled && isUnsupportedOrCondition && (
             <div className="rounded-2xl border border-red-500/25 bg-red-950/30 p-3 text-xs text-red-200">
-              OR is not supported by the active contract version. Switch to V5.2-FHE to use on-chain OR unlocking.
+              OR is not supported by the active contract version. Switch to V5.2-FHE or newer to use on-chain OR unlocking.
             </div>
           )}
 

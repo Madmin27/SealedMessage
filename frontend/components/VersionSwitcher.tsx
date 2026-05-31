@@ -39,7 +39,7 @@ export function VersionSwitcher() {
         className="inline-flex items-center gap-2 rounded-2xl border border-cyber-blue/20 bg-brand-panel/80 px-4 py-2 text-sm font-medium text-text-light hover:border-sunset/50 hover:bg-brand-panel focus:outline-none focus:ring-2 focus:ring-cyber-blue"
       >
         <span className="flex items-center gap-2">
-          {(currentVersion === "v4-fhe-legacy" || currentVersion === "v5-fhe" || currentVersion === "v5.1-fhe" || currentVersion === "v5.2-fhe") && <span className="text-xs">🔐</span>}
+          {(currentVersion === "v4-fhe-legacy" || currentVersion === "v5-fhe" || currentVersion === "v5.1-fhe" || currentVersion === "v5.2-fhe" || currentVersion === "v5.2.1-fhe") && <span className="text-xs">🔐</span>}
           {currentVersion === "v3" && <span className="text-xs">📜</span>}
           {currentLabel}
         </span>

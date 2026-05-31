@@ -21,7 +21,7 @@ export function PendingWithdrawalsPanel({ onWithdrawSuccess }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
-  const isSupportedVersion = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe";
+  const isSupportedVersion = versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe" || versionKey === "v5.2.1-fhe";
   const hasPending = pendingWei > 0n;
   const pendingEth = useMemo(() => formatEther(pendingWei), [pendingWei]);
 
@@ -63,6 +63,10 @@ export function PendingWithdrawalsPanel({ onWithdrawSuccess }: Props) {
     try {
       const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
+      const signerAddress = await signer.getAddress();
+      if (!address || signerAddress.toLowerCase() !== address.toLowerCase()) {
+        throw new Error("Active wallet changed. Please reconnect and try again.");
+      }
       const contract = new ethers.Contract(contractAddress, abi, signer);
       const tx = await contract.withdrawPayments();
       await tx.wait();
@@ -79,7 +83,7 @@ export function PendingWithdrawalsPanel({ onWithdrawSuccess }: Props) {
     } finally {
       setIsWithdrawing(false);
     }
-  }, [abi, contractAddress, hasPending, isWithdrawing, onWithdrawSuccess, refreshPending]);
+  }, [abi, address, contractAddress, hasPending, isWithdrawing, onWithdrawSuccess, refreshPending]);
 
   if (!isConnected || !isSupportedVersion) {
     return null;
@@ -98,7 +102,7 @@ export function PendingWithdrawalsPanel({ onWithdrawSuccess }: Props) {
                 : "No pending earnings yet."}
           </p>
           {!hasPending && !isLoading && (
-            <p className="mt-1 text-xs text-text-light/45">Payments from unlocked messages will appear here.</p>
+            <p className="mt-1 text-xs text-text-light/45">Payments received for your messages will appear here.</p>
           )}
         </div>
 

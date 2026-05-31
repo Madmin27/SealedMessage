@@ -47,7 +47,7 @@ Either condition can unlock the message. The receiver can unlock after the time 
 
 Rule: `timeOk || paid`
 
-This is supported by V5.2 FHE.
+This is supported by V5.2 FHE and newer.
 
 ## Payment Flow
 
@@ -55,6 +55,8 @@ This is supported by V5.2 FHE.
 2. Receiver pays the required ETH by calling `payToUnlock(messageId)`.
 3. The contract stores the payment under `pendingWithdrawals(sender)`.
 4. Sender withdraws accumulated ETH by calling `withdrawPayments()`.
+
+In V5.2.1, payment must come from the receiver wallet. Once a message is paid, the sender cannot revoke it.
 
 Payments are pull-based. ETH is not sent directly to the sender during the receiver payment transaction.
 

@@ -1,0 +1,13 @@
+{
+  "version": "v5.2.1-fhe",
+  "contract": "SealedMessageFHE_v521",
+  "address": "0x745642ed1fBff5A901F20836481FEF6414dB5Ba1",
+  "network": "sepolia",
+  "chainId": 11155111,
+  "deployer": "0xbB95625Fd1030390B08e8f51B033dc8Bec7E6CE6",
+  "deployedAt": "2026-05-31T18:53:37.108Z",
+  "blockNumber": 10962939,
+  "gasUsed": "1851167",
+  "compiler": "0.8.24+viaIR",
+  "fhevm": true
+}

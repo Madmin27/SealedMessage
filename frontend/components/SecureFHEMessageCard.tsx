@@ -10,6 +10,7 @@ import { useContractAddress, useContractVersion } from "../lib/useContractAddres
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
 import { sealedMessageFheV52Abi } from "../lib/sealedMessageFheV52Abi";
+import { sealedMessageFheV521Abi } from "../lib/sealedMessageFheV521Abi";
 import { combineMessageKey, decryptBytesEnvelope, decryptJsonEnvelope, type EncryptedEnvelope } from "../lib/securePayload";
 import { decryptKeyPartsForUser } from "../lib/fheSecure";
 import { getFileTypeLabel, formatSizeShort } from "../lib/preview";
@@ -93,10 +94,11 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const { address: userAddress } = useAccount();
   const contractAddress = useContractAddress();
   const versionKey = useContractVersion();
+  const isV521 = versionKey === "v5.2.1-fhe";
   const isV52 = versionKey === "v5.2-fhe";
   const isV51 = versionKey === "v5.1-fhe";
-  const abi = isV52 ? sealedMessageFheV52Abi : isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
-  const versionBadge = isV52 ? "V5.2-FHE" : isV51 ? "V5.1-FHE" : "V5-FHE";
+  const abi = isV521 ? sealedMessageFheV521Abi : isV52 ? sealedMessageFheV52Abi : isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+  const versionBadge = isV521 ? "V5.2.1-FHE" : isV52 ? "V5.2-FHE" : isV51 ? "V5.1-FHE" : "V5-FHE";
   const [isWorking, setIsWorking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [content, setContent] = useState<string | null>(null);

@@ -6,6 +6,7 @@ import { useContractAddress, useContractVersion } from "../lib/useContractAddres
 import { sealedMessageFheSecureAbi } from "../lib/sealedMessageFheSecureAbi";
 import { sealedMessageFheV51Abi } from "../lib/sealedMessageFheV51Abi";
 import { sealedMessageFheV52Abi } from "../lib/sealedMessageFheV52Abi";
+import { sealedMessageFheV521Abi } from "../lib/sealedMessageFheV521Abi";
 import { PendingWithdrawalsPanel } from "./PendingWithdrawalsPanel";
 import { SecureFHEMessageCard } from "./SecureFHEMessageCard";
 
@@ -96,9 +97,10 @@ export function SecureFHEMessageList({ refreshKey }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const isV521 = versionKey === "v5.2.1-fhe";
   const isV52 = versionKey === "v5.2-fhe";
   const isV51 = versionKey === "v5.1-fhe";
-  const abi = isV52 ? sealedMessageFheV52Abi : isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
+  const abi = isV521 ? sealedMessageFheV521Abi : isV52 ? sealedMessageFheV52Abi : isV51 ? sealedMessageFheV51Abi : sealedMessageFheSecureAbi;
 
   const fetchMessages = useCallback(async () => {
     if (!client || !contractAddress || !userAddress) {

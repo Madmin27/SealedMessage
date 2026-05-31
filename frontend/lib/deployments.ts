@@ -1,4 +1,4 @@
-export type DeploymentVersionKey = "v3" | "v4-fhe-legacy" | "v5-fhe" | "v5.1-fhe" | "v5.2-fhe";
+export type DeploymentVersionKey = "v3" | "v4-fhe-legacy" | "v5-fhe" | "v5.1-fhe" | "v5.2-fhe" | "v5.2.1-fhe";
 
 export type DeploymentDefinition = {
   key: DeploymentVersionKey;
@@ -47,12 +47,21 @@ const sepoliaDeployments: DeploymentDefinition[] = [
   },
   {
     key: "v5.2-fhe",
-    label: "V5.2-FHE - Current",
-    description: "Hardened current flow with Time OR Payment unlock support",
+    label: "V5.2-FHE",
+    description: "Hardened flow with Time OR Payment unlock support",
     chainId: 11155111,
     isFHE: true,
-    isCurrent: true,
+    isCurrent: !process.env.NEXT_PUBLIC_FHE_SECURE_V521_CONTRACT_ADDRESS_SEPOLIA,
     address: process.env.NEXT_PUBLIC_FHE_SECURE_V52_CONTRACT_ADDRESS_SEPOLIA as `0x${string}` | undefined,
+  },
+  {
+    key: "v5.2.1-fhe",
+    label: "V5.2.1-FHE - Current",
+    description: "V5.2 security patch: paid messages cannot be revoked, receiver-only payment",
+    chainId: 11155111,
+    isFHE: true,
+    isCurrent: Boolean(process.env.NEXT_PUBLIC_FHE_SECURE_V521_CONTRACT_ADDRESS_SEPOLIA),
+    address: process.env.NEXT_PUBLIC_FHE_SECURE_V521_CONTRACT_ADDRESS_SEPOLIA as `0x${string}` | undefined,
   },
 ];
 
@@ -80,5 +89,5 @@ export function getDefaultDeploymentVersion(chainId?: number): DeploymentVersion
 }
 
 export function isFheVersionKey(versionKey?: string): boolean {
-  return versionKey === "v4-fhe-legacy" || versionKey === "v5-fhe" || versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe";
+  return versionKey === "v4-fhe-legacy" || versionKey === "v5-fhe" || versionKey === "v5.1-fhe" || versionKey === "v5.2-fhe" || versionKey === "v5.2.1-fhe";
 }

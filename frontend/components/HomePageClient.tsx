@@ -22,7 +22,7 @@ export function HomePageClient() {
   const activeChainId = chain?.id;
 
   const selectedVersion = activeChainId ? getSelectedVersion(activeChainId) : undefined;
-  const isSecureFHE = selectedVersion === "v5-fhe" || selectedVersion === "v5.1-fhe" || selectedVersion === "v5.2-fhe";
+  const isSecureFHE = selectedVersion === "v5-fhe" || selectedVersion === "v5.1-fhe" || selectedVersion === "v5.2-fhe" || selectedVersion === "v5.2.1-fhe";
   const isLegacyFHE = selectedVersion === "v4-fhe-legacy";
   const isFHE = isSecureFHE || isLegacyFHE;
   const walletScopeKey = useMemo(
