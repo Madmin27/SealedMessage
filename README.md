@@ -14,15 +14,22 @@ SealedMessage is a privacy-focused messaging dApp that allows creators to lock t
 - **APIs**: Edge routes in `frontend/app/api/**` proxy IPFS interactions, manage metadata caching, and prepare unlock payloads.
 - **Tooling**: Hardhat scripts in `scripts/` manage deployments and operational maintenance for both the legacy and current Sepolia deployments.
 
+## Current Sepolia Deployments
+- **Current hardened V5.1-FHE contract**: `0x604218f74c1bE61cf6042C4624B2e1de6907AA40`
+- **Legacy V5-FHE contract**: `0x1cf58133fd8b0961474BaD1AC8FFE357C7877a15`
+- **Validated relayer endpoint**: `https://relayer.testnet.zama.org/v2`
+- **Live validation notes**: `docs/fhe-v51-live-validation.md`
+
 ## Security & Privacy
 - **End-to-end encryption**: The current secure flow seals payloads and metadata with AES-256-GCM before uploading ciphertext envelopes to IPFS.
 - **Ephemeral session keys**: Fresh random seeds per message minimize the blast radius of any key compromise.
 - **Commit-reveal pattern**: On-chain commitments prevent tampering and double spending when conditions are enforced.
 - **Access control**: In the secure FHE flow, Zama ACL gates the AES key parts and the receiver decrypts them with `userDecrypt` only after conditions pass.
-- **Versioned deployments**: The frontend can target legacy V3, legacy V4-FHE, and the current V5 secure FHE deployment through a registry-backed version selector.
+- **Versioned deployments**: The frontend can target legacy V3, legacy V4-FHE, legacy V5-FHE, and the current V5.1-FHE deployment through a registry-backed version selector.
 - **Preview model**: The secure V5 path keeps payload and private metadata encrypted end-to-end; only optional preview text or preview media should be exposed publicly.
 - **Key hygiene**: Sensitive configuration stays in `.env` files; keys are never committed to the repository.
 - **Server-only secrets**: Pinning credentials must stay server-side as `PINATA_JWT` or `PINATA_API_KEY`/`PINATA_SECRET_KEY`; do not expose them through `NEXT_PUBLIC_*` variables.
+- **Relayer note**: Older Zama docs may mention `relayer.testnet.zama.cloud`, but this project currently uses `https://relayer.testnet.zama.org/v2` because the live Sepolia V5.1 flow was validated with it.
 
 ## Getting Started
 1. Install dependencies in both root and frontend workspaces:
@@ -31,23 +38,30 @@ SealedMessage is a privacy-focused messaging dApp that allows creators to lock t
 	cd frontend && npm install
 	```
 2. Copy `.env.example` to `.env` (root) and populate network RPC URLs, deployer keys, and storage settings.
-3. Create `frontend/.env.local` with client-facing RPC endpoints, wallet keys, deployment addresses, and server-only pinning credentials.
+3. Create `frontend/.env.local` with public RPC endpoints and deployment addresses. Keep pinning credentials server-side only, and do not put private keys in frontend env files.
 4. Start the development stack:
 	```bash
 	npm run dev   # Hardhat local node if configured
 	cd frontend && npm run dev
 	```
 
+### Required frontend deployment vars
+- `NEXT_PUBLIC_FHE_SECURE_CONTRACT_ADDRESS_SEPOLIA` -> legacy V5-FHE deployment
+- `NEXT_PUBLIC_FHE_SECURE_V51_CONTRACT_ADDRESS_SEPOLIA` -> current V5.1-FHE deployment (`0x604218f74c1bE61cf6042C4624B2e1de6907AA40`)
+- `NEXT_PUBLIC_ZAMA_RELAYER_URL` -> `https://relayer.testnet.zama.org/v2`
+
 ## Deployment & Operations
-- **Contract deployment**: Deploy Sepolia contracts with the Hardhat scripts, then register addresses in the frontend env for `NEXT_PUBLIC_CONTRACT_ADDRESS_SEPOLIA`, `NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_SEPOLIA` (legacy), and `NEXT_PUBLIC_FHE_SECURE_CONTRACT_ADDRESS_SEPOLIA` (current secure flow).
+- **Contract deployment**: Deploy Sepolia contracts with the Hardhat scripts, then register addresses in the frontend env for `NEXT_PUBLIC_CONTRACT_ADDRESS_SEPOLIA` (legacy V3), `NEXT_PUBLIC_FHE_CONTRACT_ADDRESS_ZAMA` (legacy V4-FHE), `NEXT_PUBLIC_FHE_SECURE_CONTRACT_ADDRESS_SEPOLIA` (legacy V5-FHE), and `NEXT_PUBLIC_FHE_SECURE_V51_CONTRACT_ADDRESS_SEPOLIA` (current V5.1-FHE).
 - **Metadata management**: CLI helpers in `scripts/` (e.g., `encrypt-and-store.ts`, `inspectMessages.js`) assist with content uploads and troubleshooting.
 - **IPFS gateway**: The Next.js API routes under `frontend/app/api/ipfs/**` proxy Pinata access and expect `PINATA_JWT` or `PINATA_API_KEY`/`PINATA_SECRET_KEY` on the server.
+- **Live-flow validation**: Use `scripts/test-fhe-v51-live-flow.ts` to verify the current V5.1-FHE Sepolia deployment end-to-end before promoting frontend changes.
 
 ## Testing & Monitoring
 Automated test suites are still incomplete, so rely on targeted QA flows:
-- Create a V5 secure message, verify the payload/metadata CIDs resolve only to encrypted envelopes, then unlock and decrypt with the receiver wallet.
+- Create a V5.1 secure message, verify the payload/metadata CIDs resolve only to encrypted envelopes, then satisfy the configured conditions and decrypt with the receiver wallet.
 - Create a payment-locked message, complete the payment, and confirm the receiver can call the unlock flow and recover the AES key.
 - Create a legacy V3 or V4 message and verify the version selector can still access the historical deployment.
+- Run `ENABLE_FHEVM=true npx hardhat run scripts/test-fhe-v51-live-flow.ts --network sepolia` after relayer or deployment changes.
 
 ## Roadmap
 - Reinstate automated contract and frontend tests tailored to the current escrow design.

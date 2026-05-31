@@ -68,8 +68,8 @@ type DecryptedMetadata = {
   } | null;
 };
 
-// v2: base64 attachmentData instead of blob: URLs
-const STORAGE_PREFIX = "sealed-decrypted-v2-";
+// v3: cache key is scoped by contract + receiver to avoid cross-message leaks.
+const STORAGE_PREFIX = "sealed-decrypted-v3-";
 
 /** Convert Uint8Array to base64 string for localStorage */
 function uint8ArrayToBase64(bytes: Uint8Array): string {
@@ -107,10 +107,21 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
   const [decryptedAttachmentMeta, setDecryptedAttachmentMeta] = useState<{ name: string; size: number } | null>(null);
   const isReceiver = userAddress?.toLowerCase() === summary.receiver.toLowerCase();
   const isSender = userAddress?.toLowerCase() === summary.sender.toLowerCase();
-  const storageKey = `${STORAGE_PREFIX}${id.toString()}`;
+  const normalizedContractAddress = contractAddress?.toLowerCase() ?? "unknown-contract";
+  const normalizedUserAddress = userAddress?.toLowerCase() ?? "anonymous";
+  const storageKey = `${STORAGE_PREFIX}${normalizedContractAddress}:${normalizedUserAddress}:${id.toString()}`;
 
   // ── Restore cached decrypted content from localStorage (starts collapsed) ─
   useEffect(() => {
+    setContent(null);
+    setAttachmentUrl(null);
+    setAttachmentType(null);
+    setDecryptedAttachmentMeta(null);
+
+    if (!isReceiver || !access.isUnlocked || access.isRevoked) {
+      return;
+    }
+
     try {
       const cached = localStorage.getItem(storageKey);
       if (cached) {
@@ -139,7 +150,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
         setIsCollapsed(true);
       }
     } catch { /* ignore corrupt cache */ }
-  }, [storageKey]);
+  }, [access.isRevoked, access.isUnlocked, isReceiver, storageKey]);
 
   // ── Fetch public preview data from IPFS ─────────────────────────────
   useEffect(() => {
@@ -184,7 +195,9 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
     } catch { /* storage full — ignore */ }
   }, [storageKey]);
 
-  const paymentRemaining = access.requiredPayment > access.paidAmount ? access.requiredPayment - access.paidAmount : 0n;
+  const effectiveRequiredPayment = summary.hasPaymentCondition ? access.requiredPayment : 0n;
+  const effectivePaidAmount = summary.hasPaymentCondition ? access.paidAmount : 0n;
+  const paymentRemaining = effectiveRequiredPayment > effectivePaidAmount ? effectiveRequiredPayment - effectivePaidAmount : 0n;
   const canUnlock = !access.isUnlocked && !access.isRevoked && access.isReadyToUnlock;
   const canDecrypt = isReceiver && access.isUnlocked && !access.isRevoked;
   const alreadyDecrypted = content !== null;
@@ -200,6 +213,12 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
 
   const callContract = useCallback(async (method: "unlockMessage" | "payToUnlock" | "revokeMessage", value?: bigint) => {
     if (!contractAddress) return;
+
+    if (method === "payToUnlock" && !summary.hasPaymentCondition) {
+      setError("This message does not have a payment unlock condition.");
+      return;
+    }
+
     setIsWorking(true);
     setError(null);
 
@@ -207,16 +226,66 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
       const provider = new ethers.BrowserProvider((window as any).ethereum);
       const signer = await provider.getSigner();
       const contract = new ethers.Contract(contractAddress, abi, signer);
+
+      if (method === "payToUnlock") {
+        if (value === undefined || value <= 0n) {
+          throw new Error("This message is not requesting a valid payment amount.");
+        }
+
+        const signerAddress = await signer.getAddress();
+        const balance = await provider.getBalance(signerAddress);
+        if (balance < value) {
+          throw new Error(
+            `Insufficient Sepolia ETH. Need ${formatEther(value)} ETH for payment, but wallet only has ${formatEther(balance)} ETH. Gas is extra.`
+          );
+        }
+      }
+
+      if (method === "unlockMessage" && !access.isReadyToUnlock) {
+        const reasons: string[] = [];
+        if (summary.hasPaymentCondition && !access.isPaymentMet) {
+          reasons.push(`payment of ${formatEther(effectiveRequiredPayment)} ETH is still required`);
+        }
+        if (summary.hasTimeCondition && !access.isTimeMet) {
+          reasons.push("unlock time has not been reached yet");
+        }
+        throw new Error(
+          reasons.length > 0
+            ? `Message cannot be unlocked yet: ${reasons.join(" and ")}.`
+            : "Message cannot be unlocked yet."
+        );
+      }
+
       const tx = value !== undefined ? await contract[method](id, { value }) : await contract[method](id);
       await tx.wait();
       onChanged?.();
     } catch (contractError) {
       console.error(method, contractError);
-      setError(contractError instanceof Error ? contractError.message : `${method} failed`);
+      const message = contractError instanceof Error ? contractError.message : `${method} failed`;
+      if (message.includes("ACTION_REJECTED") || message.includes("user rejected action")) {
+        setError("Transaction was cancelled in the wallet.");
+      } else if (message.includes("insufficient funds")) {
+        setError("Wallet balance is not enough for this transaction. Payment amount and gas are both required.");
+      } else if (message.includes("No payment")) {
+        setError("This transaction did not include the required ETH payment.");
+      } else {
+        setError(message);
+      }
     } finally {
       setIsWorking(false);
     }
-  }, [contractAddress, id, onChanged, abi]);
+  }, [
+    access.isPaymentMet,
+    access.isReadyToUnlock,
+    access.isTimeMet,
+    abi,
+    contractAddress,
+    effectiveRequiredPayment,
+    id,
+    onChanged,
+    summary.hasPaymentCondition,
+    summary.hasTimeCondition,
+  ]);
 
   const handleDecrypt = useCallback(async () => {
     if (!canDecrypt || !contractAddress || !userAddress) return;
@@ -397,7 +466,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
         )}
         <div>Unlock logic: {logicLabel}</div>
         {summary.hasPaymentCondition && (
-          <div>Payment: {formatEther(access.paidAmount)} / {formatEther(access.requiredPayment)} ETH</div>
+          <div>Payment: {formatEther(effectivePaidAmount)} / {formatEther(effectiveRequiredPayment)} ETH</div>
         )}
         {/* Show pending conditions for locked messages */}
         {!access.isUnlocked && !access.isRevoked && (
@@ -405,7 +474,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
             {timeRemainingStr && (
               <span className="text-yellow-300">⏳ {timeRemainingStr} remaining</span>
             )}
-            {paymentRemaining > 0n && (
+            {summary.hasPaymentCondition && paymentRemaining > 0n && (
               <span className="text-yellow-300">💰 {formatEther(paymentRemaining)} ETH needed</span>
             )}
             {!timeRemainingStr && !access.isPaymentMet && paymentRemaining <= 0n && (
@@ -466,7 +535,7 @@ export function SecureFHEMessageCard({ id, summary, access, onChanged }: Props) 
 
           {/* Action buttons */}
           <div className="mt-4 flex flex-wrap gap-2">
-            {paymentRemaining > 0n && isReceiver && !access.isRevoked && (
+            {summary.hasPaymentCondition && paymentRemaining > 0n && isReceiver && !access.isRevoked && (
               <button
                 disabled={isWorking}
                 onClick={() => callContract("payToUnlock", paymentRemaining)}
